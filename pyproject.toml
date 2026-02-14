@@ -71,4 +71,4 @@ module = ["openbao", "openbao.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
-concurrency = ["greenlet", "thread"]
+concurrency = ["thread"]
