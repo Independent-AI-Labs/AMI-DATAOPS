@@ -1,0 +1,6 @@
+# Per-repo safe exceptions for sensitive files hook.
+# storage-config.yaml is a template using env-var substitution only.
+safe_exceptions:
+  - storage-config.yaml
+  - banned_words_exceptions.yaml
+  - sensitive_files_exceptions.yaml

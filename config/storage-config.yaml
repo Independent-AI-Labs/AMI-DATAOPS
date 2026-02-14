@@ -1,0 +1,172 @@
+# Default Storage Configurations for all backend implementations
+# These can be overridden per model or per environment
+
+storage_configs:
+  # Dgraph - Primary graph database (always ground truth for security)
+  dgraph:
+    type: graph
+    host: ${DGRAPH_HOST:-127.0.0.1}
+    port: ${DGRAPH_PORT:-9080}
+    database: ${DGRAPH_DB:-default}
+    options:
+      is_ground_truth: true  # This is always the security source of truth
+      alpha_addresses:
+        - ${DGRAPH_ALPHA:-127.0.0.1:9080}
+      zero_addresses:
+        - ${DGRAPH_ZERO:-127.0.0.1:5080}
+      tls_enabled: ${DGRAPH_TLS:-false}
+      auth_token: ${DGRAPH_AUTH_TOKEN:-}
+      namespace: ${DGRAPH_NAMESPACE:-0}
+      
+  # MongoDB - Document storage
+  mongodb:
+    type: document
+    host: ${MONGO_HOST:-127.0.0.1}
+    port: ${MONGO_PORT:-27017}
+    database: ${MONGO_DB:-ami_orchestrator}
+    username: ${MONGO_USER:-}
+    password: ${MONGO_PASSWORD:-}
+    options:
+      authSource: ${MONGO_AUTH_SOURCE:-admin}
+      retryWrites: true
+      w: majority
+      readPreference: ${MONGO_READ_PREF:-primaryPreferred}
+      maxPoolSize: ${MONGO_POOL_SIZE:-100}
+      
+  # PostgreSQL - Relational storage (shares the pgvector container)
+  postgres:
+    type: relational
+    host: ${POSTGRES_HOST:-127.0.0.1}
+    port: ${POSTGRES_PORT:-5432}
+    database: ${POSTGRES_DB:-postgres}
+    username: ${POSTGRES_USER:-postgres}
+    password: ${POSTGRES_PASSWORD:-postgres}
+    options:
+      sslmode: ${POSTGRES_SSL:-prefer}
+      pool_size: ${POSTGRES_POOL_SIZE:-20}
+      max_overflow: ${POSTGRES_MAX_OVERFLOW:-40}
+      echo: ${POSTGRES_ECHO:-false}
+      
+  # PostgreSQL with pgvector - Vector storage (same container as postgres profile)
+  pgvector:
+    type: vector
+    host: ${PGVECTOR_HOST:-127.0.0.1}
+    port: ${PGVECTOR_PORT:-5432}
+    database: ${PGVECTOR_DB:-postgres}
+    username: ${PGVECTOR_USER:-postgres}
+    password: ${PGVECTOR_PASSWORD:-postgres}
+    options:
+      vector_dimensions: ${PGVECTOR_DIMS:-1536}  # OpenAI embeddings default
+      index_type: ${PGVECTOR_INDEX:-ivfflat}
+      lists: ${PGVECTOR_LISTS:-100}
+      probes: ${PGVECTOR_PROBES:-10}
+      
+  # Redis - In-memory storage and work queues
+  redis:
+    type: inmem
+    host: ${REDIS_HOST:-127.0.0.1}
+    port: ${REDIS_PORT:-6379}
+    database: ${REDIS_DB:-0}
+    password: ${REDIS_PASSWORD:-}
+    options:
+      decode_responses: true
+      max_connections: ${REDIS_MAX_CONN:-100}
+      socket_keepalive: true
+      socket_keepalive_options:
+        TCP_KEEPINTVL: 30
+        TCP_KEEPCNT: 3
+      ttl_default: ${REDIS_TTL:-3600}  # 1 hour default TTL
+      
+  # Prometheus - Time series storage
+  prometheus:
+    type: timeseries
+    host: ${PROMETHEUS_HOST:-127.0.0.1}
+    port: ${PROMETHEUS_PORT:-9090}
+    options:
+      push_gateway: ${PROMETHEUS_PUSHGATEWAY:-127.0.0.1:9091}
+      job_name: ${PROMETHEUS_JOB:-ami_orchestrator}
+      retention_days: ${PROMETHEUS_RETENTION:-30}
+      scrape_interval: ${PROMETHEUS_SCRAPE:-15s}
+      
+  # OpenBao (Vault-compatible secrets storage)
+  openbao:
+    type: vault
+    host: ${OPENBAO_HOST:-127.0.0.1}
+    port: ${OPENBAO_PORT:-8200}
+    options:
+      scheme: ${OPENBAO_SCHEME:-http}
+      mount_path: ${OPENBAO_MOUNT_PATH:-v1/secret}
+      token: ${OPENBAO_TOKEN:-openbao-root}
+      verify_tls: ${OPENBAO_VERIFY_TLS:-false}
+      namespace: ${OPENBAO_NAMESPACE:-}
+      timeout: ${OPENBAO_TIMEOUT:-30}
+      retries: ${OPENBAO_RETRIES:-3}
+      auth_method: ${OPENBAO_AUTH_METHOD:-token}
+      role_id: ${OPENBAO_APPROLE_ID:-}
+      secret_id: ${OPENBAO_APPROLE_SECRET:-}
+      jwt: ${OPENBAO_JWT:-}
+      kubernetes_role: ${OPENBAO_K8S_ROLE:-}
+      service_account_token_path: ${OPENBAO_K8S_TOKEN_PATH:-/var/run/secrets/kubernetes.io/serviceaccount/token}
+
+# Default model configurations
+model_defaults:
+  # Which storages to use by default for new models
+  default_storages:
+    - dgraph  # Always include Dgraph as ground truth
+    
+  # Automatic behavior
+  auto_sync: true  # Automatically sync across storages
+  sync_strategy: primary_first  # dgraph first, then others
+  
+  # Security defaults
+  security_enabled: true
+  require_auth: true
+  default_permissions:
+    owner: [admin]  # Owner gets all permissions
+    authenticated: [read]  # Logged-in users can read
+    anonymous: []  # No permissions for anonymous
+    
+  # Audit defaults
+  audit_enabled: true
+  audit_fields:
+    - created_at
+    - created_by
+    - updated_at
+    - updated_by
+    
+  # Field defaults
+  id_generator: uuid7  # Use UUID v7 for all IDs
+  timestamp_format: iso8601
+  
+# Connection pool settings
+connection_pools:
+  min_size: ${POOL_MIN_SIZE:-5}
+  max_size: ${POOL_MAX_SIZE:-20}
+  timeout: ${POOL_TIMEOUT:-30}
+  idle_time: ${POOL_IDLE:-300}
+  retry_attempts: ${POOL_RETRY:-3}
+  retry_delay: ${POOL_RETRY_DELAY:-1}
+
+# Performance settings
+performance:
+  batch_size: ${BATCH_SIZE:-1000}
+  query_timeout: ${QUERY_TIMEOUT:-30}
+  max_results: ${MAX_RESULTS:-10000}
+  cache_enabled: ${CACHE_ENABLED:-true}
+  cache_ttl: ${CACHE_TTL:-300}
+
+# Security settings
+security:
+  encryption_at_rest: ${ENCRYPT_AT_REST:-true}
+  encryption_in_transit: ${ENCRYPT_IN_TRANSIT:-true}
+  audit_log_enabled: ${AUDIT_LOG:-true}
+  sensitive_field_masking: ${FIELD_MASKING:-true}
+  
+# Monitoring settings
+monitoring:
+  metrics_enabled: ${METRICS_ENABLED:-true}
+  metrics_port: ${METRICS_PORT:-9100}
+  health_check_enabled: ${HEALTH_CHECK:-true}
+  health_check_port: ${HEALTH_PORT:-8080}
+  distributed_tracing: ${TRACING_ENABLED:-false}
+  trace_endpoint: ${TRACE_ENDPOINT:-}

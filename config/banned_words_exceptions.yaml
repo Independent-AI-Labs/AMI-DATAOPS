@@ -1,0 +1,53 @@
+# Banned Words Exceptions -- AMI-DATAOPS
+# These exceptions apply only when running banned-words checks from AMI-DATAOPS.
+#
+# AMI-DATAOPS is a polyglot persistence framework that must dispatch across
+# 8 storage backends. Type dispatch, duck-typing checks, and generic data
+# serialization are fundamental to the architecture.
+
+exceptions:
+  # DAO implementations use hasattr/getattr for duck-typing across backends
+  # (e.g. checking if an object has model_dump, to_storage_dict, etc.)
+  - pattern: '\bhasattr\('
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/security/', 'ami/services/', 'ami/secrets/']
+
+  - pattern: '(?<!tc)getattr\('
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/']
+
+  # Persistence layer needs dict/tuple types for serialized data and query filters
+  - pattern: '\b(Dict|Tuple|dict|tuple|frozenset)\['
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/storage/', 'ami/security/', 'ami/secrets/', 'ami/services/', 'ami/utils/', 'tests/']
+
+  # Generic data handling requires Any for cross-backend polymorphism
+  - pattern: ':\s*Any\b'
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/storage/', 'ami/security/', 'ami/secrets/', 'ami/services/', 'ami/utils/']
+
+  - pattern: 'dict\[.*,\s*Any\]'
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/storage/', 'ami/security/', 'ami/secrets/', 'ami/services/', 'ami/utils/']
+
+  # Collection types needed for DAO interfaces and query results
+  - pattern: '\b(Mapping|Sequence|MutableMapping|MutableSequence|Iterable|Iterator)\['
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/secrets/', 'ami/storage/', 'ami/services/', 'ami/utils/']
+
+  # __dict__ access needed for model serialization in DAO layer
+  - pattern: '\.__dict__'
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/']
+
+  # self.get/self.set needed for dict-subclass models in storage configs
+  - pattern: 'self\.get\('
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/storage/']
+
+  - pattern: 'self\.set\('
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/', 'ami/storage/']
+
+  # vars() needed for model introspection in storage layer
+  - pattern: '\bvars\('
+    paths: ['ami/implementations/', 'ami/core/', 'ami/models/']
+
+  # contextlib.suppress used for cleanup in connection lifecycle
+  - pattern: '\.suppress'
+    paths: ['ami/implementations/']
+
+  # .parents[] used for project-root resolution with env-var override
+  - pattern: '\.parents\['
+    paths: ['ami/models/']

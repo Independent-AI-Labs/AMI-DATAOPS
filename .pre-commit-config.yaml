@@ -1,0 +1,49 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff-format
+        args: [ --config, ../../res/config/ruff.toml ]
+      - id: ruff
+        args: [ --config, ../../res/config/ruff.toml, --fix, --exit-non-zero-on-fix ]
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy --config-file ../../res/config/mypy.toml ami
+        language: system
+        pass_filenames: false
+        files: \.py$
+        exclude: ^tests/
+      - id: block-sensitive-files
+        name: Block Sensitive Files
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_block_sensitive_files \"$@\"' --"
+        language: system
+      - id: check-banned-words
+        name: Check Banned Words
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_check_banned_words'"
+        language: system
+        pass_filenames: false
+      - id: check-file-length
+        name: Check File Length (max 512 lines)
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_check_file_length'"
+        language: system
+        pass_filenames: false
+      - id: block-coauthored
+        name: Block Co-authored Commits
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_block_coauthored \"$1\"' --"
+        language: system
+        stages: [commit-msg]
+      - id: check-init-files
+        name: Forbid Logic in __init__.py
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_check_init_files \"$@\"' --"
+        language: system
+        files: __init__\.py$
+  - repo: local
+    hooks:
+      - id: verify-coverage
+        name: Verify Test Coverage (Unit >90%, Integration >50%)
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_verify_coverage'"
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
