@@ -39,6 +39,12 @@ repos:
         entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_check_init_files \"$@\"' --"
         language: system
         files: __init__\.py$
+      - id: check-dependency-versions
+        name: Check Docker Image Versions (strict pinning + latest)
+        entry: ../../ami/scripts/ci/check_dependency_versions.py res/docker/docker-compose.yml
+        language: system
+        pass_filenames: false
+        files: (docker-compose\.ya?ml|Dockerfile)$
   - repo: local
     hooks:
       - id: verify-coverage

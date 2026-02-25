@@ -1,0 +1,592 @@
+---
+# AMI-DATAOPS - Compose Stack Playbook
+#
+# Tags:
+#   deploy  - Install systemd unit, enable on boot, start all profiles
+#   stop    - Stop compose stack
+#   restart - Restart compose stack
+#   status  - Show service and container status
+#
+- name: AMI-DATAOPS Compose Stack
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    project_root: "{{ playbook_dir | dirname | dirname }}"
+    compose_file: "{{ project_root }}/res/docker/docker-compose.yml"
+    compose_profiles:
+      - data
+      - secrets
+      - dev
+
+  tasks:
+    # =========================================================================
+    # SETUP - Always runs first
+    # =========================================================================
+    - name: Resolve project root
+      tags: [always]
+      block:
+        - name: Get absolute path
+          ansible.builtin.command:
+            cmd: realpath {{ project_root }}
+          register: resolved_root
+          changed_when: false
+
+        - name: Set facts
+          ansible.builtin.set_fact:
+            project_root: "{{ resolved_root.stdout }}"
+            compose_file: "{{ resolved_root.stdout }}/res/docker/docker-compose.yml"
+
+    - name: Detect container runtime
+      tags: [always]
+      block:
+        - name: Find podman
+          ansible.builtin.command:
+            cmd: which podman
+          register: podman_check
+          failed_when: false
+          changed_when: false
+
+        - name: Find podman-compose
+          ansible.builtin.command:
+            cmd: which podman-compose
+          register: podman_compose_check
+          failed_when: false
+          changed_when: false
+
+        - name: Resolve real podman path (follows wrappers)
+          ansible.builtin.command:
+            cmd: readlink -f {{ podman_check.stdout }}
+          register: podman_real
+          changed_when: false
+          when: podman_check.rc == 0
+
+        - name: Resolve podman bin directory (for PATH in systemd)
+          ansible.builtin.set_fact:
+            podman_bin_dir: "{{ podman_check.stdout | dirname }}"
+          when: podman_check.rc == 0
+
+        - name: Set container runtime facts
+          ansible.builtin.set_fact:
+            container_runtime: "{{ podman_check.stdout if podman_check.rc == 0 else 'docker' }}"
+            container_runtime_path: "{{ podman_real.stdout if podman_check.rc == 0 else 'docker' }}"
+            compose_cmd: "{{ podman_compose_check.stdout if podman_compose_check.rc == 0 else 'docker compose' }}"
+            compose_cmd_path: "{{ podman_compose_check.stdout if podman_compose_check.rc == 0 else 'docker compose' }}"
+            runtime_bin_dir: "{{ podman_bin_dir | default('') }}"
+
+    # =========================================================================
+    # DEPLOY - Install systemd unit, enable on boot, start
+    # =========================================================================
+    - name: Deploy compose stack
+      tags: [deploy]
+      block:
+        - name: Stop existing compose stack
+          ansible.builtin.shell: |
+            {{ compose_cmd }} -f {{ compose_file }}{% for p in compose_profiles %} --profile {{ p }}{% endfor %} down 2>/dev/null || true
+            {{ container_runtime }} network rm -f docker_default 2>/dev/null || true
+          changed_when: false
+
+        - name: Enable user lingering (services persist after logout)
+          ansible.builtin.command:
+            cmd: loginctl enable-linger {{ ansible_user_id }}
+          changed_when: false
+
+        - name: Ensure systemd user directory exists
+          ansible.builtin.file:
+            path: "{{ ansible_user_dir }}/.config/systemd/user"
+            state: directory
+            mode: "0755"
+
+        - name: Install systemd unit
+          ansible.builtin.template:
+            src: templates/ami-compose.service.j2
+            dest: "{{ ansible_user_dir }}/.config/systemd/user/ami-compose.service"
+            mode: "0644"
+
+        - name: Reload systemd daemon
+          ansible.builtin.systemd:
+            daemon_reload: true
+            scope: user
+
+        - name: Enable ami-compose service
+          ansible.builtin.systemd:
+            name: ami-compose
+            enabled: true
+            scope: user
+
+        - name: Start ami-compose service
+          ansible.builtin.systemd:
+            name: ami-compose
+            state: restarted
+            scope: user
+
+        # --- Data Profile Health Checks ---
+        - name: Wait for PostgreSQL
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-postgres pg_isready -U postgres
+          register: pg_health
+          until: pg_health.rc == 0
+          retries: 40
+          delay: 3
+          changed_when: false
+
+        - name: Ensure Keycloak database exists
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-postgres psql -U ${POSTGRES_USER:-postgres} -tc "SELECT 1 FROM pg_database WHERE datname='${KEYCLOAK_DB:-keycloak}'" | grep -q 1 || \
+            {{ container_runtime }} exec ami-postgres psql -U ${POSTGRES_USER:-postgres} -c "CREATE DATABASE ${KEYCLOAK_DB:-keycloak}"
+          changed_when: false
+
+        - name: Wait for Redis
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-redis redis-cli ping
+          register: redis_health
+          until: redis_health.rc == 0
+          retries: 20
+          delay: 2
+          changed_when: false
+
+        - name: Wait for Dgraph
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'DGRAPH_HTTP_PORT') | default('8081', true) }}/health"
+            status_code: [200]
+            timeout: 5
+          register: dgraph_health
+          until: dgraph_health.status == 200
+          retries: 30
+          delay: 3
+
+        - name: Wait for MongoDB
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-mongo mongosh --eval "db.runCommand({ ping: 1 })" --quiet
+          register: mongo_health
+          until: mongo_health.rc == 0
+          retries: 30
+          delay: 2
+          changed_when: false
+
+        - name: Wait for Prometheus
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'PROMETHEUS_PORT') | default('9091', true) }}/-/healthy"
+            status_code: [200]
+            timeout: 5
+          register: prom_health
+          until: prom_health.status == 200
+          retries: 30
+          delay: 2
+
+        # --- Secrets Profile Health Checks ---
+        - name: Wait for OpenBao
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'OPENBAO_PORT') | default('8200', true) }}/v1/sys/health"
+            status_code: [200, 429, 472, 473, 501, 503]
+            timeout: 5
+          register: bao_health
+          until: bao_health.status | default(0) in [200, 429, 472, 473, 501, 503]
+          retries: 20
+          delay: 2
+
+        - name: Wait for Keycloak
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'KEYCLOAK_MGMT_PORT') | default('9082', true) }}/health/ready"
+            status_code: [200]
+            timeout: 5
+          register: kc_health
+          until: kc_health.status == 200
+          retries: 40
+          delay: 3
+
+        # --- Keycloak Provisioning ---
+        - name: Get Keycloak admin token
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'KEYCLOAK_PORT') | default('8082', true) }}/realms/master/protocol/openid-connect/token"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: password
+              client_id: admin-cli
+              username: "{{ lookup('env', 'KEYCLOAK_ADMIN') | default('admin', true) }}"
+              password: "{{ lookup('env', 'KEYCLOAK_ADMIN_PASSWORD') | default('admin', true) }}"
+          register: kc_token
+
+        - name: Set Keycloak provisioning facts
+          ansible.builtin.set_fact:
+            kc_admin_token: "{{ kc_token.json.access_token }}"
+            kc_base: "http://localhost:{{ lookup('env', 'KEYCLOAK_PORT') | default('8082', true) }}"
+            kc_realm: "{{ lookup('env', 'KEYCLOAK_REALM') | default('ami', true) }}"
+            kc_client_id: "{{ lookup('env', 'KEYCLOAK_CLIENT_ID') | default('ami-portal', true) }}"
+            kc_portal_url: "{{ lookup('env', 'NEXTAUTH_URL') | default('https://192.168.50.66:3000', true) }}"
+
+        - name: Check if realm exists
+          ansible.builtin.uri:
+            url: "{{ kc_base }}/admin/realms/{{ kc_realm }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ kc_admin_token }}"
+            status_code: [200, 404]
+          register: kc_realm_check
+
+        - name: Create realm
+          ansible.builtin.uri:
+            url: "{{ kc_base }}/admin/realms"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ kc_admin_token }}"
+              Content-Type: application/json
+            body_format: json
+            body:
+              realm: "{{ kc_realm }}"
+              enabled: true
+              displayName: AMI
+              registrationAllowed: false
+              loginWithEmailAllowed: true
+              duplicateEmailsAllowed: false
+              resetPasswordAllowed: true
+              bruteForceProtected: true
+            status_code: [201]
+          when: kc_realm_check.status == 404
+
+        - name: Check if client exists
+          ansible.builtin.uri:
+            url: "{{ kc_base }}/admin/realms/{{ kc_realm }}/clients?clientId={{ kc_client_id }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ kc_admin_token }}"
+          register: kc_client_check
+
+        - name: Create client
+          ansible.builtin.uri:
+            url: "{{ kc_base }}/admin/realms/{{ kc_realm }}/clients"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ kc_admin_token }}"
+              Content-Type: application/json
+            body_format: json
+            body:
+              clientId: "{{ kc_client_id }}"
+              enabled: true
+              protocol: openid-connect
+              publicClient: false
+              standardFlowEnabled: true
+              directAccessGrantsEnabled: false
+              rootUrl: "{{ kc_portal_url }}"
+              baseUrl: "{{ kc_portal_url }}"
+              redirectUris:
+                - "{{ kc_portal_url }}/*"
+              webOrigins:
+                - "{{ kc_portal_url }}"
+              attributes:
+                post.logout.redirect.uris: "{{ kc_portal_url }}/*"
+            status_code: [201]
+          when: kc_client_check.json | length == 0
+
+        - name: Get client details
+          ansible.builtin.uri:
+            url: "{{ kc_base }}/admin/realms/{{ kc_realm }}/clients?clientId={{ kc_client_id }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ kc_admin_token }}"
+          register: kc_client_details
+
+        - name: Get client secret
+          ansible.builtin.uri:
+            url: "{{ kc_base }}/admin/realms/{{ kc_realm }}/clients/{{ kc_client_details.json[0].id }}/client-secret"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ kc_admin_token }}"
+          register: kc_client_secret
+
+        - name: Display Keycloak provisioning result
+          ansible.builtin.debug:
+            msg: |
+              Keycloak provisioned:
+                Realm          : {{ kc_realm }}
+                Client ID      : {{ kc_client_id }}
+                Client Secret  : {{ kc_client_secret.json.value }}
+                Issuer URL     : {{ kc_base }}/realms/{{ kc_realm }}
+
+              Set in AMI-PORTAL .env.local:
+                KEYCLOAK_CLIENT_ID={{ kc_client_id }}
+                KEYCLOAK_CLIENT_SECRET={{ kc_client_secret.json.value }}
+                KEYCLOAK_ISSUER={{ kc_base }}/realms/{{ kc_realm }}
+
+        - name: Wait for Vaultwarden
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'VAULTWARDEN_PORT') | default('8083', true) }}/alive"
+            status_code: [200]
+            timeout: 5
+          register: vw_health
+          until: vw_health.status == 200
+          retries: 20
+          delay: 2
+
+        # --- Dev Profile Health Checks ---
+        - name: Wait for SearXNG
+          ansible.builtin.uri:
+            url: "http://localhost:8888/"
+            status_code: [200]
+            timeout: 5
+          register: searx_health
+          until: searx_health.status == 200
+          retries: 20
+          delay: 2
+
+        - name: Deployment complete
+          ansible.builtin.debug:
+            msg: |
+              Compose stack deployed and enabled on boot.
+
+              Data Profile:
+                PostgreSQL : localhost:{{ lookup('env', 'POSTGRES_PORT') | default('5432', true) }}
+                Redis      : localhost:{{ lookup('env', 'REDIS_PORT') | default('6379', true) }}
+                Dgraph     : localhost:{{ lookup('env', 'DGRAPH_HTTP_PORT') | default('8081', true) }} (HTTP), {{ lookup('env', 'DGRAPH_GRPC_PORT') | default('9081', true) }} (gRPC)
+                MongoDB    : localhost:{{ lookup('env', 'MONGO_PORT') | default('27017', true) }}
+                Prometheus : localhost:{{ lookup('env', 'PROMETHEUS_PORT') | default('9091', true) }}
+
+              Secrets Profile:
+                OpenBao    : localhost:{{ lookup('env', 'OPENBAO_PORT') | default('8200', true) }}
+                Keycloak   : localhost:{{ lookup('env', 'KEYCLOAK_PORT') | default('8082', true) }}
+                Vaultwarden: localhost:{{ lookup('env', 'VAULTWARDEN_PORT') | default('8083', true) }}
+                OpenVPN    : host networking
+
+              Dev Profile:
+                SearXNG    : localhost:8888
+
+              Logs: journalctl --user -u ami-compose -f
+
+    # =========================================================================
+    # STOP - Stop compose stack
+    # =========================================================================
+    - name: Stop compose stack
+      tags: [stop, never]
+      block:
+        - name: Stop ami-compose service
+          ansible.builtin.systemd:
+            name: ami-compose
+            state: stopped
+            scope: user
+          failed_when: false
+
+        - name: Cleanup orphan containers
+          ansible.builtin.shell: |
+            {{ compose_cmd }} -f {{ compose_file }}{% for p in compose_profiles %} --profile {{ p }}{% endfor %} down --remove-orphans 2>/dev/null || true
+          changed_when: false
+
+        - name: Compose stack stopped
+          ansible.builtin.debug:
+            msg: All services stopped
+
+    # =========================================================================
+    # RESTART - Restart compose stack
+    # =========================================================================
+    - name: Restart compose stack
+      tags: [restart, never]
+      block:
+        - name: Restart ami-compose service
+          ansible.builtin.systemd:
+            name: ami-compose
+            state: restarted
+            scope: user
+
+        # --- Data Profile Health Checks ---
+        - name: Wait for PostgreSQL
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-postgres pg_isready -U postgres
+          register: pg_health
+          until: pg_health.rc == 0
+          retries: 40
+          delay: 3
+          changed_when: false
+
+        - name: Wait for Redis
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-redis redis-cli ping
+          register: redis_health
+          until: redis_health.rc == 0
+          retries: 20
+          delay: 2
+          changed_when: false
+
+        - name: Wait for Dgraph
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'DGRAPH_HTTP_PORT') | default('8081', true) }}/health"
+            status_code: [200]
+            timeout: 5
+          register: dgraph_health
+          until: dgraph_health.status == 200
+          retries: 30
+          delay: 3
+
+        - name: Wait for MongoDB
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-mongo mongosh --eval "db.runCommand({ ping: 1 })" --quiet
+          register: mongo_health
+          until: mongo_health.rc == 0
+          retries: 30
+          delay: 2
+          changed_when: false
+
+        - name: Wait for Prometheus
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'PROMETHEUS_PORT') | default('9091', true) }}/-/healthy"
+            status_code: [200]
+            timeout: 5
+          register: prom_health
+          until: prom_health.status == 200
+          retries: 30
+          delay: 2
+
+        # --- Secrets Profile Health Checks ---
+        - name: Wait for OpenBao
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'OPENBAO_PORT') | default('8200', true) }}/v1/sys/health"
+            status_code: [200, 429, 472, 473, 501, 503]
+            timeout: 5
+          register: bao_health
+          until: bao_health.status | default(0) in [200, 429, 472, 473, 501, 503]
+          retries: 20
+          delay: 2
+
+        - name: Wait for Keycloak
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'KEYCLOAK_MGMT_PORT') | default('9082', true) }}/health/ready"
+            status_code: [200]
+            timeout: 5
+          register: kc_health
+          until: kc_health.status == 200
+          retries: 40
+          delay: 3
+
+        - name: Wait for Vaultwarden
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'VAULTWARDEN_PORT') | default('8083', true) }}/alive"
+            status_code: [200]
+            timeout: 5
+          register: vw_health
+          until: vw_health.status == 200
+          retries: 20
+          delay: 2
+
+        # --- Dev Profile Health Checks ---
+        - name: Wait for SearXNG
+          ansible.builtin.uri:
+            url: "http://localhost:8888/"
+            status_code: [200]
+            timeout: 5
+          register: searx_health
+          until: searx_health.status == 200
+          retries: 20
+          delay: 2
+
+        - name: Restart complete
+          ansible.builtin.debug:
+            msg: |
+              All services healthy after restart.
+              Logs: journalctl --user -u ami-compose -f
+
+    # =========================================================================
+    # STATUS - Show service status
+    # =========================================================================
+    - name: Show status
+      tags: [status, never]
+      block:
+        - name: Get systemd status
+          ansible.builtin.command:
+            cmd: systemctl --user status ami-compose --no-pager
+          register: systemd_status
+          failed_when: false
+          changed_when: false
+
+        # --- Data Profile ---
+        - name: Check PostgreSQL
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-postgres pg_isready -U postgres 2>/dev/null
+          register: pg_check
+          failed_when: false
+          changed_when: false
+
+        - name: Check Redis
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-redis redis-cli ping 2>/dev/null
+          register: redis_check
+          failed_when: false
+          changed_when: false
+
+        - name: Check Dgraph
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'DGRAPH_HTTP_PORT') | default('8081', true) }}/health"
+            status_code: [200]
+            timeout: 3
+          register: dgraph_check
+          failed_when: false
+
+        - name: Check MongoDB
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-mongo mongosh --eval "db.runCommand({ ping: 1 })" --quiet 2>/dev/null
+          register: mongo_check
+          failed_when: false
+          changed_when: false
+
+        - name: Check Prometheus
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'PROMETHEUS_PORT') | default('9091', true) }}/-/healthy"
+            status_code: [200]
+            timeout: 3
+          register: prom_check
+          failed_when: false
+
+        # --- Secrets Profile ---
+        - name: Check OpenBao
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'OPENBAO_PORT') | default('8200', true) }}/v1/sys/health"
+            status_code: [200, 429, 472, 473, 501, 503]
+            timeout: 3
+          register: bao_check
+          failed_when: false
+
+        - name: Check Keycloak
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'KEYCLOAK_MGMT_PORT') | default('9082', true) }}/health/ready"
+            status_code: [200]
+            timeout: 3
+          register: kc_check
+          failed_when: false
+
+        - name: Check Vaultwarden
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'VAULTWARDEN_PORT') | default('8083', true) }}/alive"
+            status_code: [200]
+            timeout: 3
+          register: vw_check
+          failed_when: false
+
+        # --- Dev Profile ---
+        - name: Check SearXNG
+          ansible.builtin.uri:
+            url: "http://localhost:8888/"
+            status_code: [200]
+            timeout: 3
+          register: searx_check
+          failed_when: false
+
+        - name: Display status
+          ansible.builtin.debug:
+            msg: |
+              Service Status:
+                Systemd    : {{ 'RUNNING' if systemd_status.rc == 0 else 'STOPPED' }}
+
+              Data Profile:
+                PostgreSQL : {{ 'UP' if pg_check.rc == 0 else 'DOWN' }}
+                Redis      : {{ 'UP' if redis_check.rc == 0 else 'DOWN' }}
+                Dgraph     : {{ 'UP' if dgraph_check.status | default(0) == 200 else 'DOWN' }}
+                MongoDB    : {{ 'UP' if mongo_check.rc == 0 else 'DOWN' }}
+                Prometheus : {{ 'UP' if prom_check.status | default(0) == 200 else 'DOWN' }}
+
+              Secrets Profile:
+                OpenBao    : {{ 'UP' if bao_check.status | default(0) in [200, 429, 472, 473, 501, 503] else 'DOWN' }}
+                Keycloak   : {{ 'UP' if kc_check.status | default(0) == 200 else 'DOWN' }}
+                Vaultwarden: {{ 'UP' if vw_check.status | default(0) == 200 else 'DOWN' }}
+
+              Dev Profile:
+                SearXNG    : {{ 'UP' if searx_check.status | default(0) == 200 else 'DOWN' }}
+
+              Container runtime: {{ container_runtime }}

@@ -1,0 +1,24 @@
+[Unit]
+Description=AMI Orchestrator Compose Stack ({{ compose_profiles | join(', ') }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ project_root }}/res/docker
+{% if runtime_bin_dir %}
+Environment=PATH={{ runtime_bin_dir }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+{% endif %}
+ExecStartPre=-{{ container_runtime_path }} network rm -f docker_default
+ExecStart={{ compose_cmd_path }} -f {{ compose_file }}{% for p in compose_profiles %} --profile {{ p }}{% endfor %} up --remove-orphans
+ExecStop={{ compose_cmd_path }} -f {{ compose_file }}{% for p in compose_profiles %} --profile {{ p }}{% endfor %} down
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ami-compose
+
+[Install]
+WantedBy=default.target

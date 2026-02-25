@@ -1,0 +1,236 @@
+# AMI-DATAOPS Compose Stack
+# Use profiles to manage service groups:
+#   - data: Core databases and monitoring
+#   - secrets: Identity, secrets management, VPN
+#   - dev: Development tools (SearXNG)
+
+services:
+  # --- Data Profile ---
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ami-postgres
+    profiles: ["data"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./config/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 15s
+      timeout: 20s
+      retries: 40
+
+  redis:
+    image: redis:8.6.1
+    container_name: ami-redis
+    profiles: ["data"]
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  dgraph:
+    image: dgraph/standalone:v25.2.0
+    container_name: ami-dgraph
+    profiles: ["data"]
+    restart: unless-stopped
+    environment:
+      DGRAPH_ALPHA_SECURITY: whitelist=0.0.0.0/0
+    ports:
+      - "${DGRAPH_HTTP_PORT:-8081}:8080"
+      - "${DGRAPH_GRPC_PORT:-9081}:9080"
+    volumes:
+      - dgraphdata:/dgraph
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+
+  mongo:
+    image: mongo:8.2.5
+    container_name: ami-mongo
+    profiles: ["data"]
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-x}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-x}
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  prometheus:
+    image: prom/prometheus:v3.9.1
+    container_name: ami-prometheus
+    profiles: ["data"]
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}'
+    ports:
+      - "${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - prometheusdata:/prometheus
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # --- Secrets Profile ---
+  openbao:
+    image: docker.io/openbao/openbao:2.4.4
+    container_name: ami-openbao
+    profiles: ["secrets"]
+    restart: unless-stopped
+    command:
+      - server
+      - -dev
+      - -dev-root-token-id=${OPENBAO_DEV_ROOT_TOKEN_ID:-openbao-dev-token}
+      - -dev-listen-address=0.0.0.0:8200
+    environment:
+      BAO_LOG_LEVEL: ${OPENBAO_LOG_LEVEL:-info}
+    ports:
+      - "${OPENBAO_PORT:-8200}:8200"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    container_name: ami-keycloak
+    profiles: ["secrets"]
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB:-keycloak}
+      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "${KEYCLOAK_PORT:-8082}:8080"
+      - "${KEYCLOAK_MGMT_PORT:-9082}:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q '200 OK'"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  vaultwarden:
+    image: vaultwarden/server:1.35.4
+    container_name: ami-vaultwarden
+    profiles: ["secrets"]
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${VAULTWARDEN_DOMAIN:-http://127.0.0.1:${VAULTWARDEN_PORT:-8083}}
+      ROCKET_ADDRESS: 0.0.0.0
+      ROCKET_PORT: 8083
+      SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:-false}
+      INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:-false}
+      WEBSOCKET_ENABLED: ${VAULTWARDEN_WEBSOCKET_ENABLED:-true}
+    network_mode: host
+    volumes:
+      - vaultwarden_data:/data:z
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/alive || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  openvpn:
+    image: ghcr.io/linuxserver/openvpn-as@sha256:651e0d9174a2faa46f65807b39e3a8b70b2df3232d3f78f734d4bac37fca486f
+    container_name: ami-openvpn
+    profiles: ["secrets"]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      PUID: ${OPENVPN_PUID:-1000}
+      PGID: ${OPENVPN_PGID:-1000}
+      TZ: ${OPENVPN_TZ:-UTC}
+      INTERFACE: ${OPENVPN_INTERFACE:-eth0}
+    network_mode: host
+    volumes:
+      - openvpn_config:/config:z
+
+  # --- Dev Profile ---
+  searxng:
+    image: searxng/searxng:2025.12.17-896863802
+    container_name: ami-searxng
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      - searxng-redis
+    environment:
+      BASE_URL: ${SEARXNG_BASE_URL:-http://127.0.0.1:8888}
+      GRANIAN_PORT: ${SEARXNG_PORT:-8888}
+      GRANIAN_HOST: 0.0.0.0
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
+      REDIS_URL: ${SEARXNG_REDIS_URL:-redis://127.0.0.1:6380/0}
+      LIMITER: ${SEARXNG_LIMITER:-true}
+    network_mode: host
+    volumes:
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8888/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  searxng-redis:
+    image: redis:8.6.1
+    container_name: ami-searxng-redis
+    profiles: ["dev"]
+    restart: unless-stopped
+    command: ["redis-server", "--port", "6380", "--save", "", "--appendonly", "no"]
+    network_mode: host
+    volumes:
+      - searxng_redis_data:/data:z
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
+  redisdata:
+  dgraphdata:
+  mongodata:
+  prometheusdata:
+  searxng_redis_data:
+  vaultwarden_data:
+  openvpn_config:

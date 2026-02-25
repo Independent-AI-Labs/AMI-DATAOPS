@@ -108,6 +108,18 @@ storage_configs:
       kubernetes_role: ${OPENBAO_K8S_ROLE:-}
       service_account_token_path: ${OPENBAO_K8S_TOKEN_PATH:-/var/run/secrets/kubernetes.io/serviceaccount/token}
 
+  # Keycloak - Identity and access management
+  keycloak:
+    type: identity
+    host: ${KEYCLOAK_HOST:-127.0.0.1}
+    port: ${KEYCLOAK_PORT:-8080}
+    options:
+      realm: ${KEYCLOAK_REALM:-ami}
+      admin_username: ${KEYCLOAK_ADMIN:-admin}
+      admin_password: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      client_id: ${KEYCLOAK_CLIENT_ID:-ami-portal}
+      scheme: ${KEYCLOAK_SCHEME:-http}
+
 # Default model configurations
 model_defaults:
   # Which storages to use by default for new models

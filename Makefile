@@ -44,6 +44,12 @@ help: ## Show this help
 	@echo "  check                Run all checks"
 	@echo "  pre-commit           Run pre-commit on all files"
 	@echo ""
+	@echo "Compose stack targets:"
+	@echo "  compose-deploy       Deploy all services and enable on boot"
+	@echo "  compose-stop         Stop compose stack"
+	@echo "  compose-restart      Restart compose stack"
+	@echo "  compose-status       Show service status"
+	@echo ""
 	@echo "Other targets:"
 	@echo "  clean                Remove build artifacts"
 	@echo "  clean-venv           Remove virtual environment"
@@ -189,6 +195,29 @@ check: lint type-check test ## Run all checks
 .PHONY: pre-commit
 pre-commit: preflight ## Run pre-commit on all files
 	$(UV) run pre-commit run --all-files
+
+# =============================================================================
+# Compose Stack Targets (Docker service orchestration)
+# =============================================================================
+
+ANSIBLE_PLAYBOOK := $(AGENTS_BOOT)/bin/ansible-playbook
+ANSIBLE_COMPOSE := $(ANSIBLE_PLAYBOOK) res/ansible/compose.yml
+
+.PHONY: compose-deploy
+compose-deploy: ## Deploy compose stack with all profiles and enable on boot
+	$(ANSIBLE_COMPOSE) --tags deploy
+
+.PHONY: compose-stop
+compose-stop: ## Stop compose stack
+	$(ANSIBLE_COMPOSE) --tags stop
+
+.PHONY: compose-restart
+compose-restart: ## Restart compose stack
+	$(ANSIBLE_COMPOSE) --tags restart
+
+.PHONY: compose-status
+compose-status: ## Show compose stack status
+	$(ANSIBLE_COMPOSE) --tags status
 
 # =============================================================================
 # Cleanup Targets

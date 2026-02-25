@@ -1,0 +1,21 @@
+use_default_settings: true
+
+server:
+  secret_key: "change-me"
+  limiter: true
+  image_proxy: true
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
