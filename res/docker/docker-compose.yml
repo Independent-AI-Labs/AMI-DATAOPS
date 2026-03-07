@@ -1,7 +1,8 @@
 # AMI-DATAOPS Compose Stack
 # Use profiles to manage service groups:
 #   - data: Core databases and monitoring
-#   - secrets: Identity, secrets management, VPN
+#   - secrets: Identity and secrets management
+#   - vpn: OpenVPN (opt-in, not started by default)
 #   - dev: Development tools (SearXNG)
 
 services:
@@ -43,7 +44,7 @@ services:
       retries: 40
 
   dgraph:
-    image: dgraph/standalone:v25.2.0
+    image: dgraph/standalone:v25.3.0
     container_name: ami-dgraph
     profiles: ["data"]
     restart: unless-stopped
@@ -157,15 +158,16 @@ services:
     environment:
       DOMAIN: ${VAULTWARDEN_DOMAIN:-http://127.0.0.1:${VAULTWARDEN_PORT:-8083}}
       ROCKET_ADDRESS: 0.0.0.0
-      ROCKET_PORT: 8083
+      ROCKET_PORT: 80
       SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:-false}
       INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:-false}
       WEBSOCKET_ENABLED: ${VAULTWARDEN_WEBSOCKET_ENABLED:-true}
-    network_mode: host
+    ports:
+      - "${VAULTWARDEN_PORT:-8083}:80"
     volumes:
       - vaultwarden_data:/data:z
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8083/alive || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/alive || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -173,7 +175,7 @@ services:
   openvpn:
     image: ghcr.io/linuxserver/openvpn-as@sha256:651e0d9174a2faa46f65807b39e3a8b70b2df3232d3f78f734d4bac37fca486f
     container_name: ami-openvpn
-    profiles: ["secrets"]
+    profiles: ["vpn"]
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -199,13 +201,14 @@ services:
       GRANIAN_PORT: ${SEARXNG_PORT:-8888}
       GRANIAN_HOST: 0.0.0.0
       SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
-      REDIS_URL: ${SEARXNG_REDIS_URL:-redis://127.0.0.1:6380/0}
+      REDIS_URL: ${SEARXNG_REDIS_URL:-redis://searxng-redis:6380/0}
       LIMITER: ${SEARXNG_LIMITER:-true}
-    network_mode: host
+    ports:
+      - "${SEARXNG_PORT:-8888}:${SEARXNG_PORT:-8888}"
     volumes:
       - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro,z
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8888/ || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:${SEARXNG_PORT:-8888}/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -216,7 +219,8 @@ services:
     profiles: ["dev"]
     restart: unless-stopped
     command: ["redis-server", "--port", "6380", "--save", "", "--appendonly", "no"]
-    network_mode: host
+    ports:
+      - "${SEARXNG_REDIS_PORT:-6380}:6380"
     volumes:
       - searxng_redis_data:/data:z
     healthcheck:

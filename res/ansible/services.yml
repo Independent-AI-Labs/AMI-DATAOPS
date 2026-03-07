@@ -1,0 +1,7 @@
+# AMI-DATAOPS — Managed services declaration
+# Read by ami/cli_components/status_systemd.py for orphan detection.
+
+compose_services:
+  ami-compose:
+    compose_file: res/docker/docker-compose.yml
+    profiles: [data, secrets, dev]

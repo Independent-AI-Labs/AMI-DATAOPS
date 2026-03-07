@@ -1,6 +1,12 @@
 repos:
   - repo: local
     hooks:
+      - id: check-unstaged
+        name: Block Unstaged Changes
+        entry: "bash -c 'source ../AMI-CI/lib/checks.sh && ci_check_unstaged'"
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: ruff-format
         name: ruff format
         entry: uv run ruff format --config ../../res/config/ruff.toml .
@@ -46,7 +52,7 @@ repos:
         files: __init__\.py$
       - id: check-dependency-versions
         name: Check Docker Image Versions (strict pinning + latest)
-        entry: ../../ami/scripts/ci/check_dependency_versions.py res/docker/docker-compose.yml
+        entry: ../AMI-CI/ami/ci/check_dependency_versions.py res/docker/docker-compose.yml
         language: system
         pass_filenames: false
         files: (docker-compose\.ya?ml|Dockerfile)$
