@@ -14,6 +14,7 @@ AGENTS_PYPROJECT := $(AGENTS_ROOT)/pyproject.toml
 AGENTS_RUFF := $(AGENTS_ROOT)/res/config/ruff.toml
 AGENTS_MYPY := $(AGENTS_ROOT)/res/config/mypy.toml
 AGENTS_BOOT := $(AGENTS_ROOT)/.boot-linux
+CI_SCRIPTS := $(AGENTS_ROOT)/projects/AMI-CI/scripts
 
 # NEVER fallback to system uv - MUST use workspace-bootstrapped uv
 # Only system git is allowed (for initial AMI-AGENTS clone)
@@ -31,7 +32,7 @@ help: ## Show this help
 	@echo "  install              Full install: Python + hooks"
 	@echo "  install-ci           CI install: Python only, no hooks"
 	@echo "  install-package      Install Python dependencies only"
-	@echo "  install-hooks        Install pre-commit hooks"
+	@echo "  install-hooks        Generate native git hooks"
 	@echo ""
 	@echo "Code quality targets:"
 	@echo "  lint                 Run ruff linter"
@@ -40,7 +41,7 @@ help: ## Show this help
 	@echo "  test                 Run pytest"
 	@echo "  test-cov             Run tests with coverage"
 	@echo "  check                Run all checks"
-	@echo "  pre-commit           Run pre-commit on all files"
+	@echo "  check-hooks          Dry-run hook generation (verify config)"
 	@echo ""
 	@echo "Compose stack targets:"
 	@echo "  compose-deploy       Deploy all services and enable on boot"
@@ -51,6 +52,7 @@ help: ## Show this help
 	@echo "Other targets:"
 	@echo "  clean                Remove build artifacts"
 	@echo "  clean-venv           Remove virtual environment"
+	@echo "  cleanup-precommit    Remove legacy pre-commit package traces"
 
 # =============================================================================
 # Preflight: Verify AMI-AGENTS workspace is present
@@ -134,7 +136,6 @@ preflight:
 # =============================================================================
 
 # Full install targets - use sequential $(MAKE) calls to ensure correct order
-# (install-hooks requires pre-commit from install-package)
 
 .PHONY: install
 install: ## Full install: Python + hooks
@@ -154,9 +155,9 @@ install-package: preflight ## Install Python dependencies
 	$(UV) sync --extra dev
 
 .PHONY: install-hooks
-install-hooks: preflight ## Install pre-commit hooks (requires install-package to have been run)
-	$(UV) run pre-commit install
-	$(UV) run pre-commit install --hook-type pre-push
+install-hooks: preflight ## Generate native git hooks from .pre-commit-config.yaml
+	@bash $(CI_SCRIPTS)/cleanup-precommit 2>/dev/null || true
+	bash $(CI_SCRIPTS)/generate-hooks
 
 # =============================================================================
 # Code Quality Targets (uses shared configs from ami-agents)
@@ -187,9 +188,13 @@ test-cov: preflight ## Run tests with coverage
 .PHONY: check
 check: lint type-check test ## Run all checks
 
-.PHONY: pre-commit
-pre-commit: preflight ## Run pre-commit on all files
-	$(UV) run pre-commit run --all-files
+.PHONY: check-hooks
+check-hooks: preflight ## Dry-run hook generation (verify config)
+	bash $(CI_SCRIPTS)/generate-hooks --dry-run
+
+.PHONY: cleanup-precommit
+cleanup-precommit: ## Remove legacy pre-commit package traces
+	bash $(CI_SCRIPTS)/cleanup-precommit
 
 # =============================================================================
 # Compose Stack Targets (Docker service orchestration)
