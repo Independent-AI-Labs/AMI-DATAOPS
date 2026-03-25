@@ -13,6 +13,7 @@ from ami.dataops.backup.backup_config import (
     refresh_adc_credentials,
 )
 from ami.dataops.backup.backup_exceptions import BackupConfigError
+from ami.dataops.backup.core.config import BackupRestoreConfig
 
 EXPECTED_SUBPROCESS_CALL_COUNT = 2
 
@@ -396,3 +397,108 @@ class TestCheckAndRefreshAdcToken:
 
         assert result is False
         assert mock_run.call_count == EXPECTED_SUBPROCESS_CALL_COUNT
+
+
+class TestBackupRestoreConfig:
+    """Tests for BackupRestoreConfig (core/config.py)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        """Prevent finding real project root."""
+        monkeypatch.setattr(
+            "ami.dataops.backup.core.config.get_project_root",
+            lambda: (_ for _ in ()).throw(RuntimeError),
+        )
+
+    def test_load_defaults(self, tmp_path):
+        """Test loading restore config with defaults."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GDRIVE_AUTH_METHOD=oauth\n")
+
+        config = BackupRestoreConfig.load(tmp_path)
+        assert config.auth_method == "oauth"
+        default_timeout = 3600
+        assert config.restore_timeout == default_timeout
+        assert config.preserve_permissions is True
+        assert config.preserve_timestamps is True
+
+    def test_load_custom_restore_path(self, tmp_path):
+        """Test RESTORE_PATH env var."""
+        env_file = tmp_path / ".env"
+        custom = tmp_path / "my_restore"
+        env_file.write_text(f"GDRIVE_AUTH_METHOD=oauth\nRESTORE_PATH={custom}\n")
+        config = BackupRestoreConfig.load(tmp_path)
+        assert config.restore_path == custom
+
+    def test_load_custom_timeout(self, tmp_path):
+        """Test RESTORE_TIMEOUT env var."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GDRIVE_AUTH_METHOD=oauth\nRESTORE_TIMEOUT=600\n")
+        config = BackupRestoreConfig.load(tmp_path)
+        expected_timeout = 600
+        assert config.restore_timeout == expected_timeout
+
+    def test_load_invalid_timeout_raises(self, tmp_path, monkeypatch):
+        """Test invalid RESTORE_TIMEOUT raises."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GDRIVE_AUTH_METHOD=oauth\n")
+        monkeypatch.setenv("RESTORE_TIMEOUT", "abc")
+        with pytest.raises(BackupConfigError, match="Invalid"):
+            BackupRestoreConfig.load(tmp_path)
+
+    def test_preserves_booleans_false(self, tmp_path):
+        """Test boolean env vars set to false."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "GDRIVE_AUTH_METHOD=oauth\n"
+            "RESTORE_PRESERVE_PERMISSIONS=false\n"
+            "RESTORE_PRESERVE_TIMESTAMPS=no\n"
+        )
+        config = BackupRestoreConfig.load(tmp_path)
+        assert config.preserve_permissions is False
+        assert config.preserve_timestamps is False
+
+    @patch(
+        "ami.dataops.backup.core.config.find_gcloud",
+        return_value="/usr/bin/gcloud",
+    )
+    def test_impersonation_auth(self, mock_gcloud, tmp_path):
+        """Test impersonation auth loading."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "GDRIVE_AUTH_METHOD=impersonation\n"
+            "GDRIVE_SERVICE_ACCOUNT_EMAIL=sa@p.iam.gserviceaccount.com\n"
+        )
+        config = BackupRestoreConfig.load(tmp_path)
+        assert config.auth_method == "impersonation"
+        assert config.service_account_email == "sa@p.iam.gserviceaccount.com"
+
+    def test_key_auth(self, tmp_path):
+        """Test key auth loading."""
+        creds = tmp_path / "sa.json"
+        creds.write_text("{}")
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            f"GDRIVE_AUTH_METHOD=key\nGDRIVE_CREDENTIALS_FILE={creds}\n"
+        )
+        config = BackupRestoreConfig.load(tmp_path)
+        assert config.auth_method == "key"
+        assert config.credentials_file == str(creds)
+
+    def test_key_auth_relative_path(self, tmp_path):
+        """Test key auth with relative path."""
+        creds = tmp_path / "creds.json"
+        creds.write_text("{}")
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "GDRIVE_AUTH_METHOD=key\nGDRIVE_CREDENTIALS_FILE=creds.json\n"
+        )
+        config = BackupRestoreConfig.load(tmp_path)
+        assert config.credentials_file == str(creds)
+
+    def test_invalid_auth_raises(self, tmp_path):
+        """Test invalid auth method raises."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GDRIVE_AUTH_METHOD=bad\n")
+        with pytest.raises(BackupConfigError, match="Invalid"):
+            BackupRestoreConfig.load(tmp_path)

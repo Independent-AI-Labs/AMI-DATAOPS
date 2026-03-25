@@ -38,6 +38,11 @@ package = true
 [tool.uv.sources]
 ami-ci = { path = "../AMI-CI", editable = true }
 
+[tool.coverage.run]
+omit = [
+    "ami/dataops/backup/restore/wizard.py",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

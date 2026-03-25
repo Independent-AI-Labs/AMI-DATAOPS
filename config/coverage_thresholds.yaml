@@ -1,0 +1,13 @@
+# AMI-DATAOPS Test Coverage Thresholds
+
+unit:
+  path: tests/unit
+  min_coverage: 90
+  source_path: ami
+  runner: uv run python -m pytest
+
+integration:
+  path: tests/integration
+  min_coverage: 50
+  source_path: ami
+  runner: uv run python -m pytest

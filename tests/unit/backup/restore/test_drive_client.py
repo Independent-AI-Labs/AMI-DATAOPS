@@ -236,3 +236,46 @@ class TestDriveRestoreClient:
 
         # Verify results
         assert result is True
+
+    @pytest.mark.asyncio
+    @patch("ami.dataops.backup.restore.drive_client.build")
+    async def test_list_backup_files_exception(self, mock_build):
+        """Test list returns empty on exception."""
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        svc = MagicMock()
+        svc.files.return_value.list.return_value.execute.side_effect = Exception(
+            "API error"
+        )
+        mock_build.return_value = svc
+        client = DriveRestoreClient(mock_auth)
+        result = await client.list_backup_files(MagicMock(folder_id=None))
+        assert result == []
+
+    @pytest.mark.asyncio
+    @patch("ami.dataops.backup.restore.drive_client.build")
+    async def test_get_metadata_exception(self, mock_build):
+        """Test get_file_metadata returns None on error."""
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        svc = MagicMock()
+        svc.files.return_value.get.return_value.execute.side_effect = Exception(
+            "Not found"
+        )
+        mock_build.return_value = svc
+        client = DriveRestoreClient(mock_auth)
+        result = await client.get_file_metadata("bad_id")
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("ami.dataops.backup.restore.drive_client.build")
+    async def test_verify_exists_false_on_error(self, mock_build):
+        """Test verify returns False on exception."""
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        svc = MagicMock()
+        svc.files.return_value.get.return_value.execute.side_effect = Exception("err")
+        mock_build.return_value = svc
+        client = DriveRestoreClient(mock_auth)
+        result = await client.verify_backup_exists("bad")
+        assert result is False
