@@ -38,6 +38,7 @@ from ami.dataops.backup.restore.extractor import (
 from ami.dataops.backup.restore.main import main as restore_main
 from ami.dataops.backup.restore.selector import select_backup_interactive
 from ami.dataops.backup.restore.service import BackupRestoreService
+from ami.dataops.backup.restore.wizard import RestoreWizard
 
 DATA_BIN_SIZE = 1024
 EXPECTED_BACKUP_COUNT = 3
@@ -497,6 +498,14 @@ async def test_cli_full_parsers():
     assert rcli.parse_arguments(["--latest-local"]).latest_local is True
     r = rcli.parse_arguments(["--revision", str(CUSTOM_REVISION)])
     assert r.revision == CUSTOM_REVISION
+
+
+@pytest.mark.asyncio
+async def test_wizard_imports_and_init():
+    """Verify wizard loads with real cli_components."""
+
+    w = RestoreWizard(MagicMock(), MagicMock(), MagicMock(), Path("/tmp"))
+    assert w is not None
 
 
 if __name__ == "__main__":
