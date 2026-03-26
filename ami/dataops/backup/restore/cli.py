@@ -11,14 +11,10 @@ from typing import NamedTuple, cast
 
 from loguru import logger
 
-try:
-    from ami.cli_components.selector import (
-        BackupFileInfo,
-        select_backup_interactive,
-    )
-except ImportError:
-    BackupFileInfo = None
-    select_backup_interactive = None
+from ami.cli_components.selector import (
+    BackupFileInfo,
+    select_backup_interactive,
+)
 from ami.dataops.backup.core.config import BackupRestoreConfig
 from ami.dataops.backup.restore.revision_display import display_revision_list
 from ami.dataops.backup.restore.revisions_client import RevisionsClient

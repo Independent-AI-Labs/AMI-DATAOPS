@@ -228,11 +228,9 @@ async def test_restore_config_full_load(tmp_path, monkeypatch):
         "ami.dataops.backup.core.config.get_project_root",
         lambda: (_ for _ in ()).throw(RuntimeError),
     )
-    (tmp_path / ".env").write_text(
-        "GDRIVE_AUTH_METHOD=oauth\n"
-        "RESTORE_TIMEOUT=120\n"
-        "RESTORE_PRESERVE_PERMISSIONS=false\n"
-    )
+    monkeypatch.setenv("RESTORE_TIMEOUT", "120")
+    monkeypatch.setenv("RESTORE_PRESERVE_PERMISSIONS", "false")
+    (tmp_path / ".env").write_text("GDRIVE_AUTH_METHOD=oauth\n")
     config = BackupRestoreConfig.load(tmp_path)
     assert config.restore_timeout == CUSTOM_TIMEOUT
     assert config.preserve_permissions is False

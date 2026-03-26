@@ -5,17 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ami.dataops.backup.restore.wizard import (
-    _HAS_CLI_COMPONENTS,
-    FileSelection,
-    RestoreWizard,
-)
+from ami.dataops.backup.restore.wizard import FileSelection, RestoreWizard
 from ami.dataops.backup.types import DriveRevisionInfo
-
-pytestmark = pytest.mark.skipif(
-    not _HAS_CLI_COMPONENTS,
-    reason="ami.cli_components not available",
-)
 
 WIZARD_MODULE = "ami.dataops.backup.restore.wizard"
 EXPECTED_TWO_PATHS = 2

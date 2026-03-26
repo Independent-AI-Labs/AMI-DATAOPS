@@ -6,7 +6,6 @@ in the old system when extracting single files from large archives.
 """
 
 import asyncio
-import contextlib
 import io
 import subprocess
 import tarfile
@@ -89,8 +88,11 @@ EXTRACT_CHUNK_SIZE = 65536  # 64 KB
 def _close_stdin_safely(proc: subprocess.Popen[bytes]) -> None:
     """Close process stdin, ignoring errors from broken pipes."""
     if proc.stdin is not None:
-        with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+        try:
             proc.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            proc.stdin = None
+            return
         proc.stdin = None
 
 

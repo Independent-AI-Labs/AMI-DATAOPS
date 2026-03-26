@@ -9,7 +9,7 @@ description = "Data operations toolkit — backup, sync, provisioning, monitorin
 requires-python = "==3.11.*"
 dependencies = [
     "pydantic==2.12.5",
-    "pydantic-settings==2.12.0",
+    "pydantic-settings==2.13.1",
     "loguru==0.7.3",
     "pyyaml==6.0.3",
     "httpx==0.28.1",
@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ami-ci[dev]",
+    "ami-agents",
 ]
 
 [tool.setuptools.packages.find]
@@ -37,11 +38,7 @@ package = true
 
 [tool.uv.sources]
 ami-ci = { path = "../AMI-CI", editable = true }
-
-[tool.coverage.run]
-omit = [
-    "ami/dataops/backup/restore/wizard.py",
-]
+ami-agents = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,6 +1,4 @@
 # Banned Words Exceptions -- AMI-DATAOPS
 # Data operations toolkit: backup, sync, provisioning, monitoring, maintenance.
 
-exceptions:
-  - pattern: '\.suppress'
-    paths: ['ami/dataops/backup/restore/']
+exceptions: []

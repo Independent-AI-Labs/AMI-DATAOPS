@@ -6,67 +6,19 @@ Interactive restore wizard.
 
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import NamedTuple, cast
 
 from loguru import logger
 
-try:
-    from ami.cli_components.dialogs import confirm
-    from ami.cli_components.format_utils import format_file_size
-    from ami.cli_components.menu_selector import (
-        MenuItem,
-        MenuSelector,
-    )
-    from ami.cli_components.selector import (
-        BackupFileInfo,
-        select_backup_interactive,
-    )
-    from ami.cli_components.text_input_utils import Colors
-    from ami.cli_components.tui import TUI, BoxStyle
-
-    _HAS_CLI_COMPONENTS = True
-except ImportError:
-    _HAS_CLI_COMPONENTS = False
-
-if not _HAS_CLI_COMPONENTS and not TYPE_CHECKING:
-    # Fallback definitions so module loads without cli_components
-    def confirm(msg: str) -> bool:
-        return input(f"{msg} [y/N] ").strip().lower() == "y"
-
-    def format_file_size(s: str | int) -> str:
-        return str(s)
-
-    def select_backup_interactive(
-        files: list[object],
-    ) -> str | None:
-        return None
-
-    class Colors:
-        BOLD = RESET = CYAN = GREEN = YELLOW = DIM = ""
-
-    class BoxStyle:
-        HEAVY = LIGHT = None
-
-    class TUI:
-        @staticmethod
-        def box(title: str = "", style: object = None) -> str:
-            return ""
-
-    class MenuItem:
-        def __init__(self, **kw: object) -> None:
-            pass
-
-    class MenuSelector:
-        def __init__(self, **kw: object) -> None:
-            pass
-
-        def select(self) -> object:
-            return None
-
-    class BackupFileInfo:
-        pass
-
-
+from ami.cli_components.dialogs import confirm
+from ami.cli_components.format_utils import format_file_size
+from ami.cli_components.menu_selector import MenuItem, MenuSelector
+from ami.cli_components.selector import (
+    BackupFileInfo,
+    select_backup_interactive,
+)
+from ami.cli_components.text_input_utils import Colors
+from ami.cli_components.tui import TUI, BoxStyle
 from ami.dataops.backup.core.config import BackupRestoreConfig
 from ami.dataops.backup.restore.extractor import extract_specific_paths
 from ami.dataops.backup.restore.revisions_client import RevisionsClient

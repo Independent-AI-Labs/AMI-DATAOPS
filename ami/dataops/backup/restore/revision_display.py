@@ -6,27 +6,9 @@ Formats and prints a colorized table of file revisions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from ami.cli_components.format_utils import format_file_size
+from ami.cli_components.text_input_utils import Colors
 from ami.dataops.backup.types import DriveRevisionInfo
-
-_HAS_CLI_COMPONENTS = False
-try:
-    from ami.cli_components.format_utils import format_file_size
-    from ami.cli_components.text_input_utils import Colors
-
-    _HAS_CLI_COMPONENTS = True
-except ImportError:
-    pass
-
-if not _HAS_CLI_COMPONENTS and not TYPE_CHECKING:
-
-    def format_file_size(s: str | int) -> str:
-        return str(s)
-
-    class Colors:
-        BOLD = RESET = CYAN = GREEN = YELLOW = DIM = ""
-
 
 BOX_WIDTH = 78
 
