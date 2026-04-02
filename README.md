@@ -1,6 +1,6 @@
 # AMI-DATAOPS
 
-Data operations toolkit for AMI infrastructure. Backup, sync, provisioning, monitoring, alerting, and maintenance automation for data services.
+Data operations toolkit for AMI infrastructure. Backup create/restore (Google Drive), Docker Compose service deployment via Ansible, and Keycloak realm/client provisioning. Sync, monitoring dashboards, alerting, and multi-instance management are planned but not yet implemented.
 
 ## Compose Stack
 
@@ -19,14 +19,14 @@ make compose-status    # Show service status
 |---------|---------|---------|------|
 | PostgreSQL (pgvector) | 16 | data | 5432 |
 | Redis | 8.6.1 | data | 6379 |
-| Dgraph | 25.2.0 | data | 8081 |
+| Dgraph | v25.3.0 | data | 8081 |
 | MongoDB | 8.2.5 | data | 27017 |
 | Prometheus | 3.10.0 | data | 9091 |
 | OpenBao | 2.4.4 | secrets | 8200 |
 | Keycloak | 26.1 | secrets | 8082 |
 | Vaultwarden | 1.35.4 | secrets | 8083 |
 | OpenVPN | latest | secrets | host |
-| SearXNG | 2025.12.17 | dev | 8888 |
+| SearXNG | 2025.12.17-896863802 | dev | 8888 |
 
 ## Development
 

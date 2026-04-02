@@ -223,16 +223,6 @@ compose-status: ## Show compose stack status
 # Volume Backup & Restore
 # =============================================================================
 
-ANSIBLE_VOLUMES := $(ANSIBLE_PLAYBOOK) res/ansible/volumes.yml
-
-.PHONY: volume-backup
-volume-backup: ## Backup all trading volumes to ~/backups/volumes/
-	$(ANSIBLE_VOLUMES) --tags backup
-
-.PHONY: volume-restore
-volume-restore: ## Restore a volume from backup (-e volume=NAME -e backup_file=PATH)
-	$(ANSIBLE_VOLUMES) --tags restore
-
 # =============================================================================
 # Cleanup Targets
 # =============================================================================
