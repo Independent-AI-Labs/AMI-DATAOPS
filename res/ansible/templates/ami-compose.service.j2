@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+EnvironmentFile={{ project_root }}/.env
 Type=simple
 WorkingDirectory={{ project_root }}/res/docker
 {% if runtime_bin_dir %}
