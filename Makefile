@@ -50,6 +50,7 @@ help: ## Show this help
 	@echo "  compose-stop         Stop compose stack"
 	@echo "  compose-restart      Restart compose stack"
 	@echo "  compose-status       Show service status"
+	@echo "  ensure-profiles      Ensure specific profiles are running (PROFILES=data,secrets)"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  clean                Remove build artifacts"
@@ -208,6 +209,11 @@ ANSIBLE_COMPOSE := $(ANSIBLE_PLAYBOOK) res/ansible/compose.yml
 .PHONY: compose-deploy
 compose-deploy: ## Deploy compose stack with all profiles and enable on boot
 	$(ANSIBLE_COMPOSE) --tags deploy
+
+.PHONY: ensure-profiles
+ensure-profiles: ## Ensure requested profiles are running (PROFILES=data,secrets)
+	@if [ -z "$(PROFILES)" ]; then echo "ERROR: Set PROFILES=data,secrets (comma-separated)"; exit 1; fi
+	$(ANSIBLE_COMPOSE) --tags ensure -e "{\"ensure_profiles\":[\"$$(echo '$(PROFILES)' | sed 's/,/","/g')\"]}"
 
 .PHONY: compose-stop
 compose-stop: ## Stop compose stack

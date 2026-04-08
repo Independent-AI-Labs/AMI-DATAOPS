@@ -75,6 +75,163 @@
             runtime_bin_dir: "{{ podman_bin_dir | default('') }}"
 
     # =========================================================================
+    # ENSURE - Start only the requested profiles if not already running
+    # =========================================================================
+    - name: Ensure requested profiles are running
+      tags: [ensure, never]
+      vars:
+        ensure_profiles: []
+        profile_services:
+          data:
+            - { name: PostgreSQL, check_cmd: "{{ container_runtime }} exec ami-postgres pg_isready", type: shell }
+            - { name: Redis, check_cmd: "{{ container_runtime }} exec ami-redis redis-cli ping", type: shell }
+          secrets:
+            - { name: Keycloak, check_url: "http://localhost:{{ lookup('env', 'KEYCLOAK_MGMT_PORT') | default('9082', true) }}/health/ready", type: http }
+          dev:
+            - { name: SearXNG, check_url: "http://localhost:8888/", type: http }
+      block:
+        - name: Validate requested profiles
+          ansible.builtin.assert:
+            that: ensure_profiles | length > 0
+            fail_msg: "No profiles requested. Pass ensure_profiles as a list, e.g. ['data','secrets']"
+
+        - name: Check if DATAOPS .env exists
+          ansible.builtin.stat:
+            path: '{{ project_root }}/.env'
+          register: dataops_env_stat
+
+        - name: Bootstrap .env from .env.example with dev defaults
+          when: not dataops_env_stat.stat.exists
+          block:
+            - name: Generate random secrets
+              ansible.builtin.shell: |
+                printf '%s\n' \
+                  "pg_pass=$(openssl rand -hex 16)" \
+                  "mongo_pass=$(openssl rand -hex 16)" \
+                  "bao_token=$(openssl rand -hex 16)" \
+                  "kc_pass=$(openssl rand -hex 16)" \
+                  "searx_secret=$(openssl rand -hex 16)"
+              register: gen_secrets_raw
+              changed_when: false
+
+            - name: Parse generated secrets
+              ansible.builtin.set_fact:
+                gen: "{{ dict(gen_secrets_raw.stdout_lines | map('split', '=', 1)) }}"
+
+            - name: Write .env with dev defaults
+              ansible.builtin.copy:
+                dest: '{{ project_root }}/.env'
+                mode: '0600'
+                content: |
+                  # Auto-generated dev defaults — re-run ensure-profiles to regenerate.
+
+                  # --- PostgreSQL ---
+                  POSTGRES_DB=postgres
+                  POSTGRES_USER=ami
+                  POSTGRES_PASSWORD={{ gen.pg_pass }}
+                  POSTGRES_PORT=5432
+
+                  # --- MongoDB ---
+                  MONGO_INITDB_ROOT_USERNAME=ami
+                  MONGO_INITDB_ROOT_PASSWORD={{ gen.mongo_pass }}
+                  MONGO_PORT=27017
+
+                  # --- Dgraph ---
+                  DGRAPH_HTTP_PORT=8081
+                  DGRAPH_GRPC_PORT=9081
+
+                  # --- Prometheus ---
+                  PROMETHEUS_PORT=9091
+                  PROMETHEUS_RETENTION=30d
+
+                  # --- Redis ---
+                  REDIS_PORT=6379
+
+                  # --- OpenBao (Secrets) ---
+                  OPENBAO_DEV_ROOT_TOKEN_ID={{ gen.bao_token }}
+                  OPENBAO_PORT=8200
+                  OPENBAO_LOG_LEVEL=info
+
+                  # --- Keycloak (Identity) ---
+                  KEYCLOAK_ADMIN=admin
+                  KEYCLOAK_ADMIN_PASSWORD={{ gen.kc_pass }}
+                  KEYCLOAK_DB=keycloak
+                  KEYCLOAK_PORT=8082
+                  KEYCLOAK_MGMT_PORT=9082
+                  KEYCLOAK_REALM=ami
+                  KEYCLOAK_CLIENT_ID=ami-portal
+
+                  # --- Vaultwarden ---
+                  VAULTWARDEN_DOMAIN=http://127.0.0.1:8083
+                  VAULTWARDEN_PORT=8083
+                  VAULTWARDEN_SIGNUPS_ALLOWED=false
+                  VAULTWARDEN_INVITATIONS_ALLOWED=false
+                  VAULTWARDEN_WEBSOCKET_ENABLED=true
+
+                  # --- SearXNG ---
+                  SEARXNG_SECRET={{ gen.searx_secret }}
+                  SEARXNG_BASE_URL=http://127.0.0.1:8888
+                  SEARXNG_PORT=8888
+                  SEARXNG_REDIS_URL=redis://searxng-redis:6380/0
+                  SEARXNG_LIMITER=true
+                  SEARXNG_REDIS_PORT=6380
+
+                  # --- Portal Integration ---
+                  NEXTAUTH_URL=https://localhost:3000
+
+            - name: Remove stale containers and volumes (fresh bootstrap)
+              ansible.builtin.shell: |
+                set -a && . '{{ project_root }}/.env' && set +a && \
+                {{ compose_cmd }} --env-file '{{ project_root }}/.env' \
+                  -f {{ compose_file }}{% for p in compose_profiles %} --profile {{ p }}{% endfor %} \
+                  down -v 2>/dev/null || true
+              changed_when: false
+
+            - name: Report .env bootstrap
+              ansible.builtin.debug:
+                msg: 'Generated {{ project_root }}/.env with dev defaults (random passwords). Cleaned stale volumes.'
+
+        - name: Check if compose stack is already running
+          ansible.builtin.shell: |
+            {{ compose_cmd }} -f {{ compose_file }}{% for p in ensure_profiles %} --profile {{ p }}{% endfor %} ps --status running -q 2>/dev/null
+          register: compose_running
+          changed_when: false
+          failed_when: false
+
+        - name: Start compose stack for requested profiles
+          ansible.builtin.shell: |
+            set -a && . '{{ project_root }}/.env' && set +a && \
+            {{ compose_cmd }} --env-file {{ project_root }}/.env \
+              -f {{ compose_file }}{% for p in ensure_profiles %} --profile {{ p }}{% endfor %} \
+              up -d
+          when: compose_running.stdout | default('') | trim == ''
+
+        - name: Wait for Keycloak (secrets profile)
+          ansible.builtin.uri:
+            url: "http://localhost:{{ lookup('env', 'KEYCLOAK_MGMT_PORT') | default('9082', true) }}/health/ready"
+            status_code: [200]
+            timeout: 5
+          register: kc_ensure_health
+          until: kc_ensure_health.status == 200
+          retries: 40
+          delay: 3
+          when: "'secrets' in ensure_profiles"
+
+        - name: Wait for PostgreSQL (data profile)
+          ansible.builtin.shell: |
+            {{ container_runtime }} exec ami-postgres pg_isready
+          register: pg_ensure_health
+          until: pg_ensure_health.rc == 0
+          retries: 40
+          delay: 3
+          changed_when: false
+          when: "'data' in ensure_profiles"
+
+        - name: Requested profiles are healthy
+          ansible.builtin.debug:
+            msg: "Profiles {{ ensure_profiles | join(', ') }} are running."
+
+    # =========================================================================
     # DEPLOY - Install systemd unit, enable on boot, start
     # =========================================================================
     - name: Deploy compose stack
