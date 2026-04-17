@@ -2,25 +2,7 @@
 
 Requirements for AMI-DATAOPS as a data operations platform. Covers backup and restore, file synchronization, data service provisioning, monitoring, alerting, and maintenance automation.
 
-## Implementation Status
-
-| Feature | Status |
-|---------|--------|
-| Archive backup/restore (Google Drive) | IMPLEMENTED |
-| Docker Compose service deployment | IMPLEMENTED |
-| Ansible playbooks (deploy/stop/restart/status) | IMPLEMENTED |
-| Keycloak realm + OIDC client provisioning | IMPLEMENTED |
-| rclone transport backend (R-BACKUP-001) | PLANNED |
-| Database-aware backup via borgmatic (1.2) | PLANNED |
-| Docker volume backup (1.3) | PLANNED |
-| File synchronization subsystem (2.x) | PLANNED |
-| Service catalog YAML structure (3.x) | PLANNED |
-| Multi-instance management CLI (4.2) | PLANNED |
-| Monitoring dashboards / Grafana (5.x) | PLANNED |
-| Alerting / Alertmanager (5.x) | PLANNED |
-| Notification webhooks (R-BACKUP-008) | PLANNED |
-| Bandwidth throttling (R-BACKUP-006) | PLANNED |
-| Metadata manifests (R-BACKUP-007) | PLANNED |
+This document defines the contracts (what must be true). Implementation progress and the roadmap for deferred work live in [BACKLOG-OPERATIONS.md](BACKLOG-OPERATIONS.md).
 
 ## Scope
 
