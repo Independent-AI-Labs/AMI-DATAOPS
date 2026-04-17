@@ -1,0 +1,30 @@
+extensions:
+  - name: ami-backup
+    binary: projects/AMI-DATAOPS/ami/dataops/backup/create/main.py
+    description: Backup (rsync snapshots / Google Drive)
+    category: dev
+    features:
+      - --mode
+      - --target
+      - --keep-local
+      - --dry-run
+    bannerPriority: 200
+    check:
+      command: ["{binary}", "--help"]
+      healthExpect: "backup"
+      timeout: 5
+
+  - name: ami-restore
+    binary: projects/AMI-DATAOPS/ami/dataops/backup/restore/main.py
+    description: Restore from snapshots or archives
+    category: dev
+    features:
+      - --latest-snapshot
+      - --snapshot
+      - --file-id
+      - --latest-local
+    bannerPriority: 210
+    check:
+      command: ["{binary}", "--help"]
+      healthExpect: "restore"
+      timeout: 5

@@ -41,7 +41,7 @@ AMI-DATAOPS automates the operational lifecycle of data services: **provision, c
 
 The backup subsystem handles three use cases: **full-archive backup** (tar + compress + push to cloud), **database-aware backup** (dump + dedup + push), and **Docker volume backup** (stop/snapshot + archive + push). All share the same rclone transport and scheduling infrastructure. All backup operations are per-instance — each named instance has its own backup config, schedule, and retention.
 
-The backup/restore code currently lives in AMI-AGENTS at `ami/scripts/backup/`. It will be migrated into AMI-DATAOPS as part of P0 work.
+The backup/restore code lives at `projects/AMI-DATAOPS/ami/dataops/backup/` (this repo). It is registered as the `ami-backup` and `ami-restore` extensions via `projects/AMI-DATAOPS/extension.manifest.yaml`.
 
 ### 1.1 Archive Backup
 
@@ -571,7 +571,7 @@ Components that already exist in the AMI-AGENTS workspace.
 
 | Component | Current Location | Action |
 |-----------|-----------------|--------|
-| Backup/restore CLI | `ami/scripts/backup/` (AMI-AGENTS) | Move into AMI-DATAOPS, extend with rclone transport |
+| Backup/restore CLI | `ami/dataops/backup/` (this repo) | Extend with rclone transport (rclone work is BACKLOG) |
 
 **Integrate with (shared, not owned by DATAOPS):**
 
