@@ -27,17 +27,12 @@ The backup/restore code lives at `projects/AMI-DATAOPS/ami/dataops/backup/` (thi
 
 ### 1.1 Archive Backup
 
-The existing archive backup system creates `.tar.zst` archives and uploads to Google Drive. It must be extended to support any cloud backend via rclone.
+Archive backup produces multi-threaded Zstandard-compressed `.tar.zst` archives. The requirements below define the full contract; which requirements are currently shipped versus pending is tracked in `BACKLOG-OPERATIONS.md`.
 
-**Current capabilities (keep):**
-- Multi-threaded Zstandard compression via `tar.zst`
-- Google Drive upload with 3 auth methods (OAuth, service account impersonation, SA key)
-- Restore from Google Drive by file ID, revision number, or interactive selection
-- Selective restore (specific files/directories from archive)
-- Local backup discovery and restore
-- Interactive wizard for restore operations
-
-**Required extensions:**
+- **R-BACKUP-000**: Archive format is `.tar.zst` (multi-threaded Zstandard).
+- **R-BACKUP-000a**: Restore is supported by file ID, revision number, local path, or interactive selection.
+- **R-BACKUP-000b**: Selective restore (specific files or directories from an archive) is supported.
+- **R-BACKUP-000c**: Google Drive auth supports three methods — OAuth, service-account impersonation, service-account key — selectable per operator.
 
 - **R-BACKUP-001**: Replace Google Drive-specific upload with rclone as the transport backend. rclone supports 50+ cloud backends (S3, GDrive, Azure Blob, Dropbox, OneDrive, Backblaze B2, SFTP, etc.) through a single configuration. The existing GDrive-specific auth and upload code is removed; GDrive becomes one rclone remote among many.
 - **R-BACKUP-002**: Support multiple backup destinations simultaneously (e.g., upload to both GDrive and S3 in a single backup run). Configurable as a list of rclone remote targets in Ansible inventory.
@@ -343,7 +338,7 @@ A YAML-driven catalog of data service types. Each type supports multiple named i
   These are conventions, not enforced hard limits.
 - **R-PORT-003**: Port conflict detection. When adding a new instance (via CLI or manual inventory edit), validate that the requested port is not already claimed by another instance across all service types. Report conflicts at Ansible render time and in CLI add commands.
 
-### 3.4 Initial Catalog (Phase 1)
+### 3.4 Initial Catalog
 
 Catalog entries for services already in the existing Docker Compose stack:
 
@@ -361,25 +356,7 @@ Catalog entries for services already in the existing Docker Compose stack:
 
 Prometheus serves double duty: it is both a data service (time-series storage for applications) and the monitoring infrastructure. A single Prometheus instance handles both. If scrape target count grows beyond what one instance handles, this can be revisited.
 
-### 3.5 Extended Catalog (Future Work)
-
-Additional service types to be cataloged incrementally. Each requires a YAML definition, health check, exporter config, and backup method.
-
-| Category | Planned Services |
-|----------|-----------------|
-| Relational | MySQL, MariaDB, CockroachDB |
-| Document | CouchDB |
-| Graph | Neo4j, ArangoDB |
-| Cache/KV | Valkey, DragonflyDB, Memcached |
-| Object Storage | SeaweedFS, Garage |
-| Time-Series | VictoriaMetrics, TimescaleDB, QuestDB |
-| Vector | Qdrant, Milvus, Weaviate |
-| Search | OpenSearch, Meilisearch, Typesense |
-| Message Broker | Redpanda, RabbitMQ, NATS, Mosquitto |
-
-These are not required for initial implementation. They are added to the catalog as needed.
-
-### 3.6 Service Configuration
+### 3.5 Service Configuration
 
 - **R-CONFIG-001**: Jinja2 configuration templates per service type (e.g., `postgresql.conf.j2`, `redis.conf.j2`). Rendered per-instance from the instance dict during deployment.
 - **R-CONFIG-002**: Environment presets (dev, prod) that set resource limits and security settings. Applied per-instance — different instances of the same type can have different presets:

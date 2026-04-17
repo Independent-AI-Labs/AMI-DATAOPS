@@ -10,7 +10,7 @@ extensions:
       - --dry-run
     bannerPriority: 200
     check:
-      command: ["{binary}", "--help"]
+      command: ["{python}", "{binary}", "--help"]
       healthExpect: "backup"
       timeout: 5
 
@@ -25,6 +25,6 @@ extensions:
       - --latest-local
     bannerPriority: 210
     check:
-      command: ["{binary}", "--help"]
+      command: ["{python}", "{binary}", "--help"]
       healthExpect: "restore"
       timeout: 5

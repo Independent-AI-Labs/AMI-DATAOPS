@@ -36,6 +36,22 @@ Roughly follows the order in which downstream systems will need them:
 5. **Monitoring + alerting (§5)** — visibility and paging.
 6. **File synchronization (§2)** — peer-to-peer and cross-host file sharing.
 
+## Extended service catalog (future work)
+
+The initial catalog in `REQUIREMENTS-OPERATIONS.md §3.4` covers the services already in the Docker Compose stack. Additional types are added as needed. Each new type requires a YAML definition, a health check, an exporter config, and a backup method.
+
+| Category | Candidate services |
+|----------|-------------------|
+| Relational | MySQL, MariaDB, CockroachDB |
+| Document | CouchDB |
+| Graph | Neo4j, ArangoDB |
+| Cache/KV | Valkey, DragonflyDB, Memcached |
+| Object Storage | SeaweedFS, Garage |
+| Time-Series | VictoriaMetrics, TimescaleDB, QuestDB |
+| Vector | Qdrant, Milvus, Weaviate |
+| Search | OpenSearch, Meilisearch, Typesense |
+| Message Broker | Redpanda, RabbitMQ, NATS, Mosquitto |
+
 ## Non-goals captured here
 
 Any item in [REQUIREMENTS-OPERATIONS.md §9 Non-Requirements](REQUIREMENTS-OPERATIONS.md) stays out of scope and is not tracked in this backlog.
