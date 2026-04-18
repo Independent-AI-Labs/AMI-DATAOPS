@@ -1,0 +1,205 @@
+---
+# AMI-DATAOPS - ami-serve Playbook
+#
+# Exposes local apps on Cloudflare Tunnel FQDNs. Reads two inventory lists:
+#   dataops_serve_tunnels    - tunnels with credentials files
+#   dataops_serve_instances  - app <-> hostname bindings referencing a tunnel
+#
+# Tags:
+#   deploy    - Render configs, install units, enable + start tunnels
+#   stop      - Stop all (or --limit) tunnels via systemctl --user
+#   restart   - Restart all (or --limit) tunnels via systemctl --user
+#   status    - Print systemd state per tunnel
+#   route-dns - Run `cloudflared tunnel route dns` for every instance
+#
+- name: AMI-DATAOPS ami-serve
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    project_root: "{{ playbook_dir | dirname | dirname }}"
+    ami_root: "{{ project_root | dirname | dirname }}"
+    cloudflared_bin: "{{ ami_root }}/.boot-linux/bin/cloudflared"
+    serve_state_dir: "{{ ansible_env.HOME }}/.config/ami-serve"
+    systemd_user_dir: "{{ ansible_env.HOME }}/.config/systemd/user"
+    tunnels: "{{ dataops_serve_tunnels | default([]) }}"
+    instances: "{{ dataops_serve_instances | default([]) }}"
+    target_tunnels: "{{ tunnels if (tunnel_limit | default('') == '') else tunnels | selectattr('name', 'eq', tunnel_limit) | list }}"
+
+  tasks:
+    # =========================================================================
+    # VALIDATION - every stage
+    # =========================================================================
+    - name: Validate inventory
+      tags: [always]
+      block:
+        - name: Assert cloudflared binary exists
+          ansible.builtin.stat:
+            path: "{{ cloudflared_bin }}"
+          register: cf_bin_stat
+          failed_when: not cf_bin_stat.stat.exists
+          changed_when: false
+
+        - name: Assert tunnel names are unique
+          ansible.builtin.assert:
+            that: tunnels | map(attribute='name') | list | length == tunnels | map(attribute='name') | list | unique | length
+            fail_msg: "Duplicate tunnel name in dataops_serve_tunnels"
+
+        - name: Assert instance names are unique
+          ansible.builtin.assert:
+            that: instances | map(attribute='name') | list | length == instances | map(attribute='name') | list | unique | length
+            fail_msg: "Duplicate instance name in dataops_serve_instances"
+
+        - name: Assert every instance tunnel ref resolves
+          ansible.builtin.assert:
+            that: item.tunnel in (tunnels | map(attribute='name') | list)
+            fail_msg: "Instance '{{ item.name }}' references unknown tunnel '{{ item.tunnel }}'"
+          loop: "{{ instances }}"
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Assert credentials files exist
+          ansible.builtin.stat:
+            path: "{{ ami_root }}/{{ item.credentials_file }}"
+          register: creds_stat
+          failed_when: not creds_stat.stat.exists
+          changed_when: false
+          loop: "{{ target_tunnels }}"
+          loop_control:
+            label: "{{ item.name }}"
+
+    # =========================================================================
+    # DEPLOY
+    # =========================================================================
+    - name: Ensure state + systemd-user dirs
+      tags: [deploy]
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ serve_state_dir }}"
+        - "{{ systemd_user_dir }}"
+
+    - name: Ensure per-tunnel state dir
+      tags: [deploy]
+      ansible.builtin.file:
+        path: "{{ serve_state_dir }}/{{ item.name }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Render cloudflared config per tunnel
+      tags: [deploy]
+      ansible.builtin.template:
+        src: cloudflared-tunnel-config.yml.j2
+        dest: "{{ serve_state_dir }}/{{ item.name }}/config.yml"
+        mode: "0600"
+      vars:
+        tunnel: "{{ item }}"
+        tunnel_instances: "{{ instances | selectattr('tunnel', 'eq', item.name) | list }}"
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Install systemd user unit per tunnel
+      tags: [deploy]
+      ansible.builtin.template:
+        src: ami-serve-tunnel.service.j2
+        dest: "{{ systemd_user_dir }}/ami-serve-{{ item.name }}.service"
+        mode: "0644"
+      vars:
+        tunnel: "{{ item }}"
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Enable linger when any instance requests persistence
+      tags: [deploy]
+      ansible.builtin.command:
+        cmd: "loginctl enable-linger {{ ansible_env.USER }}"
+      when: instances | selectattr('systemd_persist', 'defined') | selectattr('systemd_persist') | list | length > 0
+      changed_when: false
+
+    - name: Reload user systemd daemon
+      tags: [deploy, restart]
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+        scope: user
+
+    - name: Enable + start tunnels
+      tags: [deploy]
+      ansible.builtin.systemd_service:
+        name: "ami-serve-{{ item.name }}.service"
+        scope: user
+        state: started
+        enabled: true
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # =========================================================================
+    # STOP
+    # =========================================================================
+    - name: Stop tunnels
+      tags: [stop]
+      ansible.builtin.systemd_service:
+        name: "ami-serve-{{ item.name }}.service"
+        scope: user
+        state: stopped
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # =========================================================================
+    # RESTART
+    # =========================================================================
+    - name: Restart tunnels
+      tags: [restart]
+      ansible.builtin.systemd_service:
+        name: "ami-serve-{{ item.name }}.service"
+        scope: user
+        state: restarted
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # =========================================================================
+    # STATUS
+    # =========================================================================
+    - name: Query systemd unit state
+      tags: [status]
+      ansible.builtin.command:
+        cmd: "systemctl --user show ami-serve-{{ item.name }}.service -p ActiveState,SubState,MainPID"
+      register: unit_state
+      changed_when: false
+      failed_when: false
+      loop: "{{ target_tunnels }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Print status
+      tags: [status]
+      ansible.builtin.debug:
+        msg: |
+          Tunnel: {{ item.item.name }}
+          State: {{ item.stdout | default('unknown') }}
+      loop: "{{ unit_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # =========================================================================
+    # ROUTE-DNS
+    # =========================================================================
+    - name: Create Cloudflare DNS CNAMEs
+      tags: [route-dns]
+      ansible.builtin.command:
+        cmd: "{{ cloudflared_bin }} tunnel route dns {{ item.tunnel }} {{ item.hostname }}"
+      register: route_out
+      changed_when: "'Added CNAME' in (route_out.stdout | default(''))"
+      failed_when: route_out.rc != 0
+      loop: "{{ instances if (tunnel_limit | default('') == '') else instances | selectattr('tunnel', 'eq', tunnel_limit) | list }}"
+      loop_control:
+        label: "{{ item.name }} -> {{ item.hostname }}"

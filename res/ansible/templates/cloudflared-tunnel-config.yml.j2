@@ -1,0 +1,27 @@
+{# Cloudflared tunnel config rendered by ami-serve.
+   Inputs (set in the task that includes this template):
+     tunnel            - one entry from dataops_serve_tunnels
+     tunnel_instances  - dataops_serve_instances filtered to this tunnel
+     ami_root          - absolute path to the AMI workspace root
+#}
+tunnel: {{ tunnel.tunnel_id }}
+credentials-file: {{ ami_root }}/{{ tunnel.credentials_file }}
+{% if tunnel.metrics_port | default(None) %}
+metrics: localhost:{{ tunnel.metrics_port }}
+{% endif %}
+{% if tunnel.replica is defined and tunnel.replica is not none %}
+# Replica index {{ tunnel.replica }} honoured via --replica on ExecStart.
+{% endif %}
+
+ingress:
+{% for inst in tunnel_instances %}
+  - hostname: {{ inst.hostname }}
+    service: {{ inst.upstream }}
+{% if inst.origin_request is defined and inst.origin_request %}
+    originRequest:
+{% for k, v in inst.origin_request.items() %}
+      {{ k }}: {{ v | to_json }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+  - service: http_status:404

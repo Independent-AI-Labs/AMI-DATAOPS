@@ -1,0 +1,16 @@
+[Unit]
+Description=AMI Serve tunnel: {{ tunnel.name }}
+Documentation=file://{{ ami_root }}/projects/AMI-DATAOPS/docs/specifications/SPEC-SERVE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ cloudflared_bin }} tunnel --config {{ serve_state_dir }}/{{ tunnel.name }}/config.yml run{% if tunnel.replica is defined and tunnel.replica is not none %} --replica {{ tunnel.replica }}{% endif %} {{ tunnel.tunnel_id }}
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
