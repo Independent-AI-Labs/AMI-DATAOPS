@@ -1,0 +1,17 @@
+[Unit]
+Description=AMI Intake daemon (P2P log reporting receiver)
+Documentation=file://{{ ami_root }}/projects/AMI-DATAOPS/docs/specifications/SPEC-REPORT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ python_bin }} {{ ami_root }}/projects/AMI-DATAOPS/ami/dataops/intake/main.py serve --config {{ intake_config_path }}
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

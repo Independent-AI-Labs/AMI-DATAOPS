@@ -1,0 +1,153 @@
+---
+# AMI-DATAOPS - ami-intake Playbook
+#
+# Deploys the ami-intake FastAPI daemon as a user-scoped systemd unit.
+# Reads dataops_intake_config from inventory and renders a runtime YAML
+# + service unit, then enables linger if requested.
+#
+# Tags:
+#   deploy   - Render config, install unit, daemon-reload, enable + start
+#   stop     - systemctl --user stop ami-intake.service
+#   restart  - systemctl --user restart ami-intake.service
+#   status   - Print unit state + audit.log size
+#
+- name: AMI-DATAOPS ami-intake
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    project_root: "{{ playbook_dir | dirname | dirname }}"
+    ami_root: "{{ project_root | dirname | dirname }}"
+    python_bin: "{{ ami_root }}/.boot-linux/bin/python"
+    intake_config_dir: "{{ ansible_env.HOME }}/.config/ami-intake"
+    intake_config_path: "{{ intake_config_dir }}/config.yml"
+    systemd_user_dir: "{{ ansible_env.HOME }}/.config/systemd/user"
+    intake_config: "{{ dataops_intake_config | default({}) }}"
+
+  tasks:
+    # =========================================================================
+    # VALIDATION - every stage
+    # =========================================================================
+    - name: Validate inventory
+      tags: [always]
+      block:
+        - name: Assert python binary exists
+          ansible.builtin.stat:
+            path: "{{ python_bin }}"
+          register: py_stat
+          failed_when: not py_stat.stat.exists
+          changed_when: false
+
+        - name: Assert dataops_intake_config declares required fields
+          ansible.builtin.assert:
+            that:
+              - intake_config.intake_port is defined
+              - intake_config.intake_root is defined
+              - intake_config.allowed_senders is defined
+              - intake_config.allowed_senders | length > 0
+            fail_msg: >
+              dataops_intake_config must set intake_port, intake_root,
+              and a non-empty allowed_senders list.
+
+    # =========================================================================
+    # DEPLOY
+    # =========================================================================
+    - name: Ensure intake config + systemd-user dirs
+      tags: [deploy]
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ intake_config_dir }}"
+        - "{{ systemd_user_dir }}"
+
+    - name: Ensure intake_root exists
+      tags: [deploy]
+      ansible.builtin.file:
+        path: "{{ intake_config.intake_root }}"
+        state: directory
+        mode: "0750"
+
+    - name: Render intake runtime config
+      tags: [deploy]
+      ansible.builtin.template:
+        src: ami-intake-config.yml.j2
+        dest: "{{ intake_config_path }}"
+        mode: "0600"
+
+    - name: Install ami-intake systemd user unit
+      tags: [deploy]
+      ansible.builtin.template:
+        src: ami-intake.service.j2
+        dest: "{{ systemd_user_dir }}/ami-intake.service"
+        mode: "0644"
+
+    - name: Enable linger when intake requests persistence
+      tags: [deploy]
+      ansible.builtin.command:
+        cmd: "loginctl enable-linger {{ ansible_env.USER }}"
+      when: intake_config.persist | default(false) | bool
+      changed_when: false
+
+    - name: Reload user systemd daemon
+      tags: [deploy, restart]
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+        scope: user
+
+    - name: Enable + start ami-intake
+      tags: [deploy]
+      ansible.builtin.systemd_service:
+        name: ami-intake.service
+        scope: user
+        state: started
+        enabled: true
+
+    # =========================================================================
+    # STOP
+    # =========================================================================
+    - name: Stop ami-intake
+      tags: [stop]
+      ansible.builtin.systemd_service:
+        name: ami-intake.service
+        scope: user
+        state: stopped
+
+    # =========================================================================
+    # RESTART
+    # =========================================================================
+    - name: Restart ami-intake
+      tags: [restart]
+      ansible.builtin.systemd_service:
+        name: ami-intake.service
+        scope: user
+        state: restarted
+
+    # =========================================================================
+    # STATUS
+    # =========================================================================
+    - name: Query systemd unit state
+      tags: [status]
+      ansible.builtin.command:
+        cmd: "systemctl --user show ami-intake.service -p ActiveState,SubState,MainPID"
+      register: unit_state
+      changed_when: false
+      failed_when: false
+
+    - name: Stat audit.log
+      tags: [status]
+      ansible.builtin.stat:
+        path: "{{ intake_config.intake_root }}/audit.log"
+      register: audit_stat
+      changed_when: false
+
+    - name: Print status
+      tags: [status]
+      ansible.builtin.debug:
+        msg: |
+          Unit:        ami-intake.service
+          State:       {{ unit_state.stdout | default('unknown') }}
+          Bind:        127.0.0.1:{{ intake_config.intake_port }}
+          Intake root: {{ intake_config.intake_root }}
+          Audit log:   {{ 'present (' ~ audit_stat.stat.size ~ ' bytes)' if audit_stat.stat.exists else 'absent' }}
