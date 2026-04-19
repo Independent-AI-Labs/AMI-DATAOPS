@@ -51,10 +51,10 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 
 ### 4. Sender — Manifest & Signing
 
-- **R-REPORT-040**: Each send shall produce one JSON manifest with fields: `schema_version` (integer, v1 == 1), `sender_id` (string, from `dataops_report_sender_config.sender_id`), `sent_at` (RFC3339 UTC), `bundle_id` (ULID), `source_root` (absolute path the selection was made under), and `files` (array of `{relative_path, sha256, size_bytes, mtime}`).
+- **R-REPORT-040**: Each send shall produce one JSON manifest with fields: `schema_version` (integer, v1 == 1), `sender_id` (string, from `dataops_report_sender_config.sender_id`), `sent_at` (RFC3339 UTC), `bundle_id` (UUIDv7 string, generated via the workspace-standard `uuid_utils.uuid7()`), `source_root` (absolute path the selection was made under), and `files` (array of `{relative_path, sha256, size_bytes, mtime}`).
 - **R-REPORT-041**: Per-file `sha256` in the manifest shall be computed over the exact bytes of the source file on the sender host before any archiving.
 - **R-REPORT-042**: `relative_path` entries shall be forward-slash-separated, never absolute, never containing `..`, and unique within the manifest.
-- **R-REPORT-043**: The manifest shall be serialised to bytes using UTF-8, sorted keys at every level, no trailing whitespace, and a single trailing newline. These canonicalisation rules exist so the receiver's HMAC verification is deterministic.
+- **R-REPORT-043**: The manifest shall be serialised to bytes using [RFC 8785 JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785), UTF-8 encoded, with exactly one trailing LF. Because the manifest schema forbids floats and non-BMP characters in v1, the RFC 8785 number-formatting edge cases do not apply; a conforming implementation shall still call a JCS serialiser rather than relying on `json.dumps` with ad-hoc options, so upgrading to v2 cannot silently break verification.
 - **R-REPORT-044**: The signature header value shall be `HMAC-SHA256(shared_secret, canonical_manifest_bytes)`, hex-encoded, sent as `X-AMI-Signature: sha256=<hex>`.
 - **R-REPORT-045**: The wire bundle shall be `multipart/form-data` with exactly two parts: `manifest` (the canonical JSON bytes, `Content-Type: application/json`) and `bundle` (a gzip-compressed tar of the selected files, `Content-Type: application/gzip`). No other parts shall be accepted.
 - **R-REPORT-046**: Tarball compression shall be gzip. xz, zstd, and bzip2 are out of scope for v1 to keep the sender dependency surface minimal.
@@ -79,7 +79,7 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 
 ### 7. Intake — Service Model
 
-- **R-REPORT-100**: `ami-intake serve` shall run a FastAPI application under `uvicorn` (ASGI), bound by default to `127.0.0.1:<intake_port>` where `intake_port` is declared in `dataops_intake_config`.
+- **R-REPORT-100**: `ami-intake serve` shall run a FastAPI application under `uvicorn` (ASGI), bound by default to `127.0.0.1:<intake_port>` where `intake_port` is declared in `dataops_intake_config`. `uvicorn` shall be launched with `--limit-max-requests` and `--limit-concurrency` set from `dataops_intake_config`, and the request-body limit enforced at the ASGI layer shall match `max_bundle_mb` so oversized bodies are rejected before the FastAPI handler is invoked.
 - **R-REPORT-101**: A user-scoped systemd unit shall be installed at `~/.config/systemd/user/ami-intake.service` with `Type=simple`, `Restart=always`, `RestartSec=5`, `WantedBy=default.target`.
 - **R-REPORT-102**: The unit `ExecStart` shall invoke the bootstrapped Python with `ami-intake serve` (the argparse subcommand), passing the config path as `--config <path>`.
 - **R-REPORT-103**: When `dataops_intake_config.persist: true`, the deploy shall run `loginctl enable-linger $(id -un)` once per host so the daemon survives logout.
@@ -96,9 +96,9 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 
 ### 9. Intake — Content Validation
 
-- **R-REPORT-140**: The bundle tarball shall be extracted into a staging directory (tmpfs if available). Nothing shall be moved to the quarantine tree until every validation rule below has passed for every file.
+- **R-REPORT-140**: The bundle tarball shall be extracted into a staging directory (tmpfs if available) using Python's [PEP 706](https://peps.python.org/pep-0706/) `tarfile` `filter="data"` extraction filter. Nothing shall be moved to the quarantine tree until every validation rule below has passed for every file.
 - **R-REPORT-141**: Extension allowlist: `.log`, `.txt`, `.json`, `.ndjson`, `.md`, `.csv`, `.tsv`, `.yaml`, `.yml`. Any file whose final extension is not on the list shall reject the entire bundle.
-- **R-REPORT-142**: Path safety: no entry may contain `..`, be absolute, or resolve (after extraction) to a path outside the staging root. Symlinks in the tar stream shall reject the entire bundle regardless of target.
+- **R-REPORT-142**: Path safety: no entry may contain `..`, be absolute, or resolve (after extraction) to a path outside the staging root. The `filter="data"` tarfile extraction filter shall be relied on for this check; any tar member that would violate it rejects the entire bundle. Symlinks, hardlinks, device nodes, FIFOs, and setuid/setgid bits in the tar stream are rejected outright.
 - **R-REPORT-143**: Text-only probe: the first 8192 bytes of each file shall be scanned; a NUL (`\x00`) byte shall reject the entire bundle.
 - **R-REPORT-144**: Per-file size cap: each file's size on disk after extraction shall be ≤ `max_file_mb` (default 100 MiB). Enforced during streaming extraction so a zip-bomb is detected before the whole file is written.
 - **R-REPORT-145**: Aggregate bundle cap: the sum of all extracted file sizes shall be ≤ `max_bundle_mb` (default 500 MiB). Same streaming-enforcement rule.
@@ -106,6 +106,7 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 - **R-REPORT-147**: Hash verification: after extraction, the receiver shall recompute SHA256 over each file and compare to the per-file hash in the manifest. Mismatch rejects the entire bundle.
 - **R-REPORT-148**: Atomic acceptance: any failure in §9 rejects the bundle in its entirety. Partial acceptance is not supported because the signed manifest is an atomic claim.
 - **R-REPORT-149**: Validators shall be implemented as pure functions with no filesystem side effects beyond reading the input path, so they are trivially unit-testable and reusable by other projects (§14).
+- **R-REPORT-150**: The receive handler shall consume the request body via the ASGI stream interface (`Request.stream()` or an equivalent chunked reader), not via the default FastAPI `UploadFile` spool. This is load-bearing: the default `SpooledTemporaryFile` threshold would cause every bundle to hit disk unconditionally, and the size caps could be violated before they are checked. The streaming reader shall enforce `max_bundle_mb` with a running byte counter that aborts the read as soon as the limit is exceeded.
 
 ### 10. Intake — Quarantine Layout
 
@@ -176,12 +177,13 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 ## Constraints
 
 - Python 3.11+ (DATAOPS is pinned).
-- Single new transitive dependency allowed: `fastapi` + `uvicorn` for the intake daemon. `ami-report` uses only stdlib + `httpx` (already in DATAOPS).
-- HMAC-SHA256 and SHA256 from `hashlib`/`hmac` only; no new crypto libraries.
-- No execution of received content under any circumstance; no code path that passes received bytes to `exec`, `eval`, `subprocess.run`, `importlib`, or any interpreter.
-- Tarball format: POSIX `ustar` inside gzip. No pax extensions, no `@LongLink`.
+- New runtime dependencies to be added to `projects/AMI-DATAOPS/pyproject.toml`: `fastapi`, `uvicorn[standard]`, `prometheus-client`, `python-rfc8785` (JCS serialiser). `httpx` is already present. `uuid_utils` (for UUIDv7 `bundle_id`) is either already a workspace dependency or shall be promoted to one before implementation.
+- HMAC-SHA256 and SHA256 shall come from `hashlib` / `hmac`; constant-time comparison shall use `hmac.compare_digest`. No new crypto libraries.
+- No execution of received content under any circumstance; no code path shall pass received bytes to `exec`, `eval`, `subprocess.run`, `importlib`, or any interpreter.
+- Tar extraction uses `tarfile` in streaming mode (`mode="r|gz"`) with `filter="data"` (PEP 706); no pax extensions honoured, no `@LongLink`, no support for absolute paths or symlinks.
 - User-scoped systemd only for the daemon (no root required).
 - Reuses the existing `ami.cli_components.selection_dialog.SelectionDialog` primitive and `ami.cli_components.dialogs` facade; no new TUI library.
+- UUID generation follows the workspace rule: UUIDv7 only (via `uuid_utils.uuid7()`). No `uuid.uuid4` / `uuid1` / etc.
 
 ## Non-Requirements
 
