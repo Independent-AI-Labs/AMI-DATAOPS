@@ -64,6 +64,13 @@ help: ## Show this help
 	@echo "  serve-route-dns      Create Cloudflare CNAMEs for bound hostnames"
 	@echo "  serve-logs NAME=<t>  Tail journalctl for ami-serve-<t>.service"
 	@echo ""
+	@echo "Intake (P2P log receiver) targets:"
+	@echo "  intake-deploy        Render config + start ami-intake.service"
+	@echo "  intake-stop          Stop ami-intake"
+	@echo "  intake-restart       Restart ami-intake"
+	@echo "  intake-status        Report unit state + audit.log size"
+	@echo "  intake-logs          Tail journalctl for ami-intake.service"
+	@echo ""
 	@echo "Other targets:"
 	@echo "  clean                Remove build artifacts"
 	@echo "  clean-venv           Remove virtual environment"
@@ -272,6 +279,32 @@ serve-route-dns: ## Create Cloudflare CNAMEs for configured hostnames
 serve-logs: ## Tail a single tunnel (usage: make serve-logs NAME=main)
 	@if [ -z "$(NAME)" ]; then echo "ERROR: Set NAME=<tunnel>"; exit 1; fi
 	journalctl --user -u ami-serve-$(NAME).service -f
+
+# =============================================================================
+# Intake (P2P log receiver) Targets
+# =============================================================================
+
+ANSIBLE_INTAKE := $(ANSIBLE_PLAYBOOK) res/ansible/intake.yml
+
+.PHONY: intake-deploy
+intake-deploy: ## Render intake config + install/start the systemd user unit
+	$(ANSIBLE_INTAKE) --tags deploy
+
+.PHONY: intake-stop
+intake-stop: ## Stop the ami-intake daemon
+	$(ANSIBLE_INTAKE) --tags stop
+
+.PHONY: intake-restart
+intake-restart: ## Restart the ami-intake daemon
+	$(ANSIBLE_INTAKE) --tags restart
+
+.PHONY: intake-status
+intake-status: ## Report ami-intake unit state + audit.log size
+	$(ANSIBLE_INTAKE) --tags status
+
+.PHONY: intake-logs
+intake-logs: ## Tail the ami-intake journal
+	journalctl --user -u ami-intake.service -f
 
 # =============================================================================
 # Volume Backup & Restore

@@ -45,3 +45,20 @@ extensions:
       command: ["{python}", "{binary}", "--help"]
       healthExpect: "ami-serve"
       timeout: 5
+
+  - name: ami-intake
+    binary: projects/AMI-DATAOPS/ami/dataops/intake/main.py
+    description: Receive, validate, and quarantine remote log bundles
+    category: infra
+    features:
+      - serve
+      - status
+      - ls
+      - show
+      - verify
+      - rotate-audit
+    bannerPriority: 260
+    check:
+      command: ["{python}", "{binary}", "--help"]
+      healthExpect: "ami-intake"
+      timeout: 5
