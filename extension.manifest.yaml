@@ -62,17 +62,3 @@ extensions:
       command: ["{python}", "{binary}", "--help"]
       healthExpect: "ami-intake"
       timeout: 5
-
-  - name: ami-report
-    binary: projects/AMI-DATAOPS/ami/dataops/report/main.py
-    description: Multi-select + ship log files to a peer AMI instance
-    category: dev
-    features:
-      - send
-      - preview
-      - peers
-    bannerPriority: 250
-    check:
-      command: ["{python}", "{binary}", "--help"]
-      healthExpect: "ami-report"
-      timeout: 5
