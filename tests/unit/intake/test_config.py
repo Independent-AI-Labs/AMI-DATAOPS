@@ -14,7 +14,7 @@ from ami.dataops.intake.config import (
 )
 
 _TEST_PORT = 9180
-_DEFAULT_FILE_MB = 100
+_DEFAULT_FILE_MB = 1
 _DEFAULT_BUNDLE_MB = 500
 _DEFAULT_FILE_COUNT = 1000
 

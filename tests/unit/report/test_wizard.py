@@ -15,7 +15,12 @@ import pytest
 from ami.dataops.report import wizard
 from ami.dataops.report.config import PeerEntry
 from ami.dataops.report.defaults import DEFAULT_PEER_NAME
-from ami.dataops.report.scanner import FolderEntry, TreeEntry, scan_roots
+from ami.dataops.report.scanner import (
+    CandidateFile,
+    FolderEntry,
+    TreeEntry,
+    scan_roots,
+)
 from ami.dataops.report.transport import PostContext
 
 
@@ -35,6 +40,7 @@ class _StubInputs:
             "select_all_tree": True,
             "pick_peer_name": None,
             "secret_values": {},
+            "preview": True,
             "confirm": True,
             "captured": None,
         }
@@ -111,6 +117,7 @@ def _build_primitives(stub: _StubInputs) -> wizard.WizardPrimitives:
         pick_scope=_make_pick_scope(stub),
         pick_tree=_make_pick_tree(stub),
         pick_peer=_make_pick_peer(stub),
+        preview_archive=lambda _summary: stub.preview,
         confirm=lambda _message: stub.confirm,
         post_bundle=_make_post(stub),
     )
@@ -121,7 +128,7 @@ def scratch_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "app.log").write_text("alpha\n")
-    (logs / "trace.ndjson").write_text('{"x":1}\n')
+    (logs / "trace.txt").write_text("trace entry\n")
     monkeypatch.setenv("AMI_ROOT", str(tmp_path))
     return logs
 
@@ -247,3 +254,87 @@ class TestScanRootsIntegration:
         entries = scan_roots([scratch_tree])
         assert any(isinstance(e, FolderEntry) for e in entries)
         assert any(e.toggleable for e in entries)
+
+
+class TestFindScopeCandidates:
+    def test_lists_root_with_total_then_direct_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "a.log").write_text("1\n")
+        (tmp_path / "nested").mkdir()
+        (tmp_path / "nested" / "b.log").write_text("2\n")
+        (tmp_path / "nested" / "c.txt").write_text("3\n")
+        (tmp_path / "empty_dir").mkdir()
+        results = wizard.find_scope_candidates(tmp_path)
+        paths = [str(p) for p, _ in results]
+        assert paths[0] == str(tmp_path.resolve())
+        assert str((tmp_path / "nested").resolve()) in paths
+        assert str((tmp_path / "empty_dir").resolve()) not in paths
+
+    def test_counts_match_direct_files(self, tmp_path: Path) -> None:
+        expected_total = 3
+        expected_nested = 2
+        (tmp_path / "a.log").write_text("1\n")
+        (tmp_path / "nested").mkdir()
+        (tmp_path / "nested" / "b.log").write_text("2\n")
+        (tmp_path / "nested" / "c.txt").write_text("3\n")
+        results = dict(wizard.find_scope_candidates(tmp_path))
+        assert results[tmp_path.resolve()] == expected_total
+        assert results[(tmp_path / "nested").resolve()] == expected_nested
+
+    def test_skips_hidden_junk_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "hook.log").write_text("1\n")
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".venv" / "stub.log").write_text("1\n")
+        (tmp_path / "real.log").write_text("1\n")
+        results = wizard.find_scope_candidates(tmp_path)
+        paths = [p for p, _ in results]
+        assert tmp_path.resolve() in paths
+        assert (tmp_path / ".git").resolve() not in paths
+        assert (tmp_path / ".venv").resolve() not in paths
+
+    def test_ignores_non_log_non_txt(self, tmp_path: Path) -> None:
+        (tmp_path / "ok.log").write_text("1\n")
+        (tmp_path / "data.json").write_text("{}\n")
+        (tmp_path / "doc.md").write_text("# doc\n")
+        results = dict(wizard.find_scope_candidates(tmp_path))
+        assert results[tmp_path.resolve()] == 1
+
+    def test_empty_workspace_returns_empty_list(self, tmp_path: Path) -> None:
+        assert wizard.find_scope_candidates(tmp_path) == []
+
+
+class TestRenderArchiveSummary:
+    def test_shows_sizes_and_count(self) -> None:
+        summary = wizard.ArchiveSummary(
+            compressed_bytes=1024,
+            uncompressed_bytes=4096,
+            files=[
+                CandidateFile(
+                    absolute_path=Path("/tmp/a.log"),
+                    relative_path="a.log",
+                    size_bytes=2048,
+                    preflight="ok",
+                )
+            ],
+        )
+        rendered = wizard.render_archive_summary(summary)
+        assert "1.0 KiB compressed" in rendered
+        assert "4.0 KiB uncompressed" in rendered
+        assert "Files:    1" in rendered
+        assert "a.log" in rendered
+
+    def test_truncates_over_limit_with_plus_k_more(self) -> None:
+        files = [
+            CandidateFile(
+                absolute_path=Path(f"/tmp/{i}.log"),
+                relative_path=f"{i}.log",
+                size_bytes=1,
+                preflight="ok",
+            )
+            for i in range(25)
+        ]
+        summary = wizard.ArchiveSummary(
+            compressed_bytes=100, uncompressed_bytes=25, files=files
+        )
+        rendered = wizard.render_archive_summary(summary)
+        assert "(+5 more)" in rendered

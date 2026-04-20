@@ -25,24 +25,12 @@ ReasonCode = Literal[
     "schema_unsupported",
 ]
 
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        ".log",
-        ".txt",
-        ".json",
-        ".ndjson",
-        ".md",
-        ".csv",
-        ".tsv",
-        ".yaml",
-        ".yml",
-    }
-)
+ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".log", ".txt"})
 
 TEXT_PROBE_BYTES = 8192
 NULL_BYTE = b"\x00"
 HASH_CHUNK_BYTES = 65536
-DEFAULT_MAX_FILE_BYTES = 100 * 1024 * 1024
+DEFAULT_MAX_FILE_BYTES = 1 * 1024 * 1024
 DEFAULT_MAX_BUNDLE_BYTES = 500 * 1024 * 1024
 DEFAULT_MAX_FILES_PER_BUNDLE = 1000
 

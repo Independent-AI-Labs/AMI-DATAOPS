@@ -23,7 +23,7 @@ class TestSenderReceiverRoundTrip:
         (source / "nested").mkdir(parents=True)
         files = {
             "app.log": b"alpha entry\n",
-            "nested/trace.ndjson": b'{"ok":true}\n',
+            "nested/trace.txt": b"line-a\n",
         }
         expected: dict[str, str] = {}
         for rel, payload in files.items():

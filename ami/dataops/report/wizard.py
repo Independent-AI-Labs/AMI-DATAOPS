@@ -62,6 +62,44 @@ PickPeerFn = Callable[[list[PeerEntry]], PeerEntry | None]
 ConfirmFn = Callable[[str], bool]
 PostBundleFn = Callable[[PostContext], dict[str, object]]
 
+ARCHIVE_PREVIEW_FILE_LIMIT = 20
+BYTES_PER_KIB = 1024.0
+KIB_PER_MIB = 1024.0
+
+SCOPE_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        ".venvs",
+        ".tox",
+        ".boot-linux",
+        ".gcloud",
+        ".runtime",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        "__pycache__",
+        "build",
+        "dist",
+        "tmp",
+    }
+)
+SCOPE_ALLOWED_SUFFIXES: tuple[str, ...] = (".log", ".txt")
+
+
+class ArchiveSummary(BaseModel):
+    """Inputs to the archive-preview screen: compressed tar + per-file info."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    compressed_bytes: int
+    uncompressed_bytes: int
+    files: list[CandidateFile]
+
+
+PreviewArchiveFn = Callable[[ArchiveSummary], bool]
+
 
 class WizardPrimitives(BaseModel):
     """Injectable I/O primitives so tests can drive the wizard deterministically."""
@@ -73,6 +111,7 @@ class WizardPrimitives(BaseModel):
     pick_scope: PickScopeFn
     pick_tree: PickTreeFn
     pick_peer: PickPeerFn
+    preview_archive: PreviewArchiveFn
     confirm: ConfirmFn
     post_bundle: PostBundleFn
 
@@ -99,6 +138,63 @@ def _default_pick_scope(labels: list[str], preselected: list[str]) -> list[str] 
     return [str(item) for item in result]
 
 
+def _format_size(size_bytes: int) -> str:
+    kib = size_bytes / BYTES_PER_KIB
+    if kib < KIB_PER_MIB:
+        return f"{kib:.1f} KiB"
+    return f"{kib / KIB_PER_MIB:.1f} MiB"
+
+
+def find_scope_candidates(root: Path) -> list[tuple[Path, int]]:
+    """Walk `root`, return `[(abs_dir_path, direct_log_or_txt_count), ...]`.
+
+    The returned list starts with `root` itself and its *total recursive*
+    count, followed by every descendant directory that directly contains
+    at least one `.log` or `.txt` file, each with its direct-children
+    count. Hidden/junk directories (.git, .venv, node_modules, etc) are
+    pruned to keep the walk fast and the picker readable.
+    """
+    counts: dict[Path, int] = {}
+    total = 0
+    abs_root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(abs_root, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in SCOPE_SKIP_DIRS]
+        hits = sum(1 for f in filenames if f.lower().endswith(SCOPE_ALLOWED_SUFFIXES))
+        if hits == 0:
+            continue
+        counts[Path(dirpath).resolve()] = hits
+        total += hits
+    result: list[tuple[Path, int]] = []
+    if total > 0:
+        result.append((abs_root, total))
+    result.extend((path, counts[path]) for path in sorted(counts) if path != abs_root)
+    return result
+
+
+def render_archive_summary(summary: ArchiveSummary) -> str:
+    """Format the archive-preview screen body. Pure function so tests can verify it."""
+    head = (
+        f"Archive:  {_format_size(summary.compressed_bytes)} compressed  /  "
+        f"{_format_size(summary.uncompressed_bytes)} uncompressed\n"
+        f"Files:    {len(summary.files)}\n\n"
+    )
+    shown = summary.files[:ARCHIVE_PREVIEW_FILE_LIMIT]
+    lines = [
+        f"  {candidate.relative_path:<60}{_format_size(candidate.size_bytes)}"
+        for candidate in shown
+    ]
+    extras = len(summary.files) - len(shown)
+    if extras > 0:
+        lines.append(f"  (+{extras} more)")
+    return head + "\n".join(lines) + "\n\nReview complete?"
+
+
+def _default_preview_archive(summary: ArchiveSummary) -> bool:
+    return bool(
+        dialogs.confirm(render_archive_summary(summary), title="Archive preview")
+    )
+
+
 def default_primitives() -> WizardPrimitives:
     return WizardPrimitives(
         prompt=_default_prompt,
@@ -106,6 +202,7 @@ def default_primitives() -> WizardPrimitives:
         pick_scope=_default_pick_scope,
         pick_tree=pick_tree,
         pick_peer=pick_peer,
+        preview_archive=_default_preview_archive,
         confirm=_default_confirm,
         post_bundle=post_bundle,
     )
@@ -127,36 +224,54 @@ def _resolve_sender_id(cfg: ReportConfig | None, prompt: Prompter) -> str:
         )
 
 
-def _resolve_scope(
-    cfg: ReportConfig, prompt: Prompter, pick_scope: PickScopeFn
-) -> list[Path]:
-    ami_root = Path(os.environ.get("AMI_ROOT", "")).expanduser()
-    candidates: list[tuple[str, Path]] = []
-    if ami_root and (ami_root / "logs").is_dir():
-        candidates.append(("AMI_ROOT/logs", ami_root / "logs"))
-    candidates.extend(
-        (f"configured: {extra_cfg}", extra_cfg) for extra_cfg in cfg.sender.extra_roots
-    )
+def _collect_scope_labels(
+    ami_root: Path, extras: list[Path]
+) -> tuple[list[str], dict[str, Path]]:
+    labels: list[str] = []
+    by_label: dict[str, Path] = {}
     if ami_root and ami_root.is_dir():
-        candidates.append(("AMI_ROOT (entire workspace)", ami_root))
-    roots: list[Path] = [path for _, path in candidates if path.exists()][:1]
-    if candidates:
-        labels = [f"{label} ({path})" for label, path in candidates]
-        picked = pick_scope(labels, [labels[0]])
-        if picked is None:
-            return []
-        roots = [path for label, path in candidates if f"{label} ({path})" in picked]
+        for path, count in find_scope_candidates(ami_root):
+            label = f"{path} ({count})"
+            labels.append(label)
+            by_label[label] = path
+    for extra in extras:
+        if not extra.is_dir():
+            continue
+        for path, count in find_scope_candidates(extra):
+            label = f"{path} ({count})"
+            if label in by_label:
+                continue
+            labels.append(label)
+            by_label[label] = path
+    return labels, by_label
+
+
+def _prompt_extra_paths(prompt: Prompter, existing: list[Path]) -> list[Path]:
+    roots = list(existing)
     while True:
         extra_input = prompt("Add custom path (blank to finish)", "")
         if not extra_input:
-            break
+            return roots
         extra_path = Path(extra_input).expanduser().absolute()
         if not extra_path.exists():
             print(f"warning: {extra_path} does not exist; skipped", file=sys.stderr)
             continue
         if extra_path not in roots:
             roots.append(extra_path)
-    return roots
+
+
+def _resolve_scope(
+    cfg: ReportConfig, prompt: Prompter, pick_scope: PickScopeFn
+) -> list[Path]:
+    ami_root = Path(os.environ.get("AMI_ROOT", "")).expanduser()
+    labels, by_label = _collect_scope_labels(ami_root, cfg.sender.extra_roots)
+    roots: list[Path] = []
+    if labels:
+        picked = pick_scope(labels, [labels[0]])
+        if picked is None:
+            return []
+        roots = [by_label[label] for label in picked if label in by_label]
+    return _prompt_extra_paths(prompt, roots)
 
 
 def _load_or_default_config(
@@ -218,6 +333,22 @@ class SendRequest(BaseModel):
     token: str
 
 
+def _dispatch_post(
+    primitives: WizardPrimitives, ctx: PostContext
+) -> tuple[int, dict[str, object] | None]:
+    try:
+        return EXIT_OK, primitives.post_bundle(ctx)
+    except AuthRejected as exc:
+        print(f"auth rejected: {exc}", file=sys.stderr)
+        return EXIT_AUTH_REJECTED, None
+    except ValidationRejectedByPeer as exc:
+        print(f"validation reject {exc.reason_code}: {exc.detail}", file=sys.stderr)
+        return EXIT_VALIDATION_REJECTED_PEER, None
+    except NetworkError as exc:
+        print(f"network error: {exc}", file=sys.stderr)
+        return EXIT_NETWORK_ERROR, None
+
+
 def _send(request: SendRequest) -> int:
     sender_id = request.sender_id
     peer = request.peer
@@ -241,14 +372,21 @@ def _send(request: SendRequest) -> int:
     )
     manifest_bytes = manifest_mod.canonical_manifest_bytes(manifest)
     signature = manifest_mod.sign_manifest(manifest_bytes, secret)
-    summary = (
+    bundle_bytes = build_bundle_tarball(manifest, source_root)
+    archive_summary = ArchiveSummary(
+        compressed_bytes=len(bundle_bytes),
+        uncompressed_bytes=sum(c.size_bytes for c in expanded),
+        files=expanded,
+    )
+    if not primitives.preview_archive(archive_summary):
+        return EXIT_OK
+    confirm_body = (
         f"Destination: {peer.name} ({peer.endpoint})\n"
         f"Bundle id:   {bundle_id}\n"
         f"Files:       {len(expanded)}\n"
     )
-    if not primitives.confirm(summary):
+    if not primitives.confirm(confirm_body):
         return EXIT_OK
-    bundle_bytes = build_bundle_tarball(manifest, source_root)
     ctx = PostContext(
         endpoint=f"{peer.endpoint}v1/bundles",
         bearer_token=token,
@@ -257,17 +395,9 @@ def _send(request: SendRequest) -> int:
         signature=signature,
         bundle_bytes=bundle_bytes,
     )
-    try:
-        receipt = primitives.post_bundle(ctx)
-    except AuthRejected as exc:
-        print(f"auth rejected: {exc}", file=sys.stderr)
-        return EXIT_AUTH_REJECTED
-    except ValidationRejectedByPeer as exc:
-        print(f"validation reject {exc.reason_code}: {exc.detail}", file=sys.stderr)
-        return EXIT_VALIDATION_REJECTED_PEER
-    except NetworkError as exc:
-        print(f"network error: {exc}", file=sys.stderr)
-        return EXIT_NETWORK_ERROR
+    exit_code, receipt = _dispatch_post(primitives, ctx)
+    if receipt is None:
+        return exit_code
     print(json.dumps(receipt, indent=2))
     return EXIT_OK
 

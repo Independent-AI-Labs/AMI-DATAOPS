@@ -29,7 +29,7 @@ class TestScanRoots:
         (tmp_path / "a.log").write_text("one\n")
         (tmp_path / "nested").mkdir()
         (tmp_path / "nested" / "b.log").write_text("two\n")
-        (tmp_path / "nested" / "c.ndjson").write_text('{"x":1}\n')
+        (tmp_path / "nested" / "c.txt").write_text("trace\n")
         entries = scan_roots([tmp_path])
         files = files_only(entries)
         assert len([f for f in files if f.toggleable]) == _EXPECTED_OK_COUNT

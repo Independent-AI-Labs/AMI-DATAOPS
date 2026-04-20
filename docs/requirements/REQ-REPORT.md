@@ -40,6 +40,7 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 - **R-REPORT-015**: `ami-report send --ci --defaults FILE` shall replace the TUI with a non-interactive run driven by `FILE`, which lists selected paths plus the destination peer name. This mirrors the `ami-update --ci --defaults` convention.
 - **R-REPORT-016**: Selection shall resolve symbolic links before pre-flight; a symlink pointing outside any declared candidate root shall be rejected with a clear error.
 - **R-REPORT-017**: Empty selection shall abort the send before the destination step, with exit code 2.
+- **R-REPORT-018**: In interactive mode, after the manifest + tarball are built and before the POST, the wizard shall render an archive-preview screen showing the compressed tar size, uncompressed aggregate size, and the list of files being shipped (up to 20 shown, with a `(+K more)` indicator for longer archives). The operator may abort (exit 0) or continue to the final confirmation.
 
 ### 3. Sender — Destination
 
@@ -97,10 +98,10 @@ Together they form the P2P reporting channel. Neither creates the other; each is
 ### 9. Intake — Content Validation
 
 - **R-REPORT-140**: The bundle tarball shall be extracted into a staging directory (tmpfs if available) using Python's [PEP 706](https://peps.python.org/pep-0706/) `tarfile` `filter="data"` extraction filter. Nothing shall be moved to the quarantine tree until every validation rule below has passed for every file.
-- **R-REPORT-141**: Extension allowlist: `.log`, `.txt`, `.json`, `.ndjson`, `.md`, `.csv`, `.tsv`, `.yaml`, `.yml`. Any file whose final extension is not on the list shall reject the entire bundle.
+- **R-REPORT-141**: Extension allowlist: `.log`, `.txt`. The feature is log reporting; the allowlist matches. Any file whose final extension is not on the list shall reject the entire bundle.
 - **R-REPORT-142**: Path safety: no entry may contain `..`, be absolute, or resolve (after extraction) to a path outside the staging root. The `filter="data"` tarfile extraction filter shall be relied on for this check; any tar member that would violate it rejects the entire bundle. Symlinks, hardlinks, device nodes, FIFOs, and setuid/setgid bits in the tar stream are rejected outright.
 - **R-REPORT-143**: Text-only probe: the first 8192 bytes of each file shall be scanned; a NUL (`\x00`) byte shall reject the entire bundle.
-- **R-REPORT-144**: Per-file size cap: each file's size on disk after extraction shall be ≤ `max_file_mb` (default 100 MiB). Enforced during streaming extraction so a zip-bomb is detected before the whole file is written.
+- **R-REPORT-144**: Per-file size cap: each file's size on disk after extraction shall be ≤ `max_file_mb` (default 1 MiB — sized for text logs, not data dumps). Enforced during streaming extraction so a zip-bomb is detected before the whole file is written.
 - **R-REPORT-145**: Aggregate bundle cap: the sum of all extracted file sizes shall be ≤ `max_bundle_mb` (default 500 MiB). Same streaming-enforcement rule.
 - **R-REPORT-146**: File count cap: a bundle shall contain ≤ `max_files_per_bundle` (default 1000) entries. Exceeding this rejects the bundle before extraction proceeds.
 - **R-REPORT-147**: Hash verification: after extraction, the receiver shall recompute SHA256 over each file and compare to the per-file hash in the manifest. Mismatch rejects the entire bundle.

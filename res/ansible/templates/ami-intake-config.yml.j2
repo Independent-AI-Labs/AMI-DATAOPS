@@ -3,7 +3,7 @@
 intake_port: {{ intake_config.intake_port }}
 intake_root: {{ intake_config.intake_root }}
 persist: {{ (intake_config.persist | default(false)) | string | lower }}
-max_file_mb: {{ intake_config.max_file_mb | default(100) }}
+max_file_mb: {{ intake_config.max_file_mb | default(1) }}
 max_bundle_mb: {{ intake_config.max_bundle_mb | default(500) }}
 max_files_per_bundle: {{ intake_config.max_files_per_bundle | default(1000) }}
 global_concurrency: {{ intake_config.global_concurrency | default(4) }}

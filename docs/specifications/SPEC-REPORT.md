@@ -123,7 +123,7 @@ dataops_intake_config:
   intake_port: 9180
   intake_root: /home/ami/AMI-AGENTS/logs/intake    # default
   persist: true
-  max_file_mb: 100
+  max_file_mb: 1
   max_bundle_mb: 500
   max_files_per_bundle: 1000
   global_concurrency: 4

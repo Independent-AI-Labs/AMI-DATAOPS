@@ -35,7 +35,7 @@ class TestExtractRoundTrip:
         files = {
             "root.log": b"one\ntwo\nthree\n",
             "nested/app.log": b"event payload with spaces",
-            "nested/trace.ndjson": b'{"ts":"2026-04-19T00:00:00Z"}\n',
+            "nested/trace.txt": b"line-ts-2026-04-19\n",
         }
         expected_hashes: dict[str, str] = {}
         for rel, payload in files.items():

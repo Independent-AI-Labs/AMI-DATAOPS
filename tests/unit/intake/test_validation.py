@@ -23,9 +23,19 @@ class TestValidationRejected:
 class TestValidateExtension:
     @pytest.mark.parametrize(
         "path",
+        ["a.log", "b.txt", "nested/dir/app.log", "UPPER.LOG"],
+    )
+    def test_accepts_allowlisted(self, path: str) -> None:
+        v.validate_extension(path)
+
+    @pytest.mark.parametrize(
+        "path",
         [
-            "a.log",
-            "b.txt",
+            "script.sh",
+            "bin.exe",
+            "code.py",
+            "noext",
+            "a.pyc",
             "c.json",
             "d.ndjson",
             "e.md",
@@ -33,15 +43,7 @@ class TestValidateExtension:
             "g.tsv",
             "h.yaml",
             "i.yml",
-            "nested/dir/app.log",
-            "UPPER.LOG",
         ],
-    )
-    def test_accepts_allowlisted(self, path: str) -> None:
-        v.validate_extension(path)
-
-    @pytest.mark.parametrize(
-        "path", ["script.sh", "bin.exe", "code.py", "noext", "a.pyc"]
     )
     def test_rejects_non_allowlisted(self, path: str) -> None:
         with pytest.raises(v.ValidationRejected) as exc:
