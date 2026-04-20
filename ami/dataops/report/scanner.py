@@ -23,6 +23,23 @@ from ami.dataops.intake import validation
 
 PreflightStatus = Literal["ok", "ext_not_allowed", "not_text", "file_too_large"]
 
+SCAN_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        ".venvs",
+        ".tox",
+        ".boot-linux",
+        ".gcloud",
+        ".runtime",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        "__pycache__",
+    }
+)
+
 
 class CandidateFile(BaseModel):
     """One file the TUI may offer for selection."""
@@ -92,6 +109,60 @@ class _ScanOptions(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+def _build_candidate(child: Path, depth: int, opts: _ScanOptions) -> CandidateFile:
+    preflight, detail = _preflight_one(
+        child,
+        max_file_bytes=opts.max_file_bytes,
+        allowed_extensions=opts.allowed_extensions,
+    )
+    stat = child.stat()
+    return CandidateFile(
+        absolute_path=child,
+        relative_path=child.relative_to(opts.rel_base).as_posix(),
+        size_bytes=stat.st_size,
+        preflight=preflight,
+        reject_detail=detail,
+        depth=depth + 1,
+        mtime_epoch=stat.st_mtime,
+    )
+
+
+class _ChildAccum(BaseModel):
+    """Running counts produced while iterating a directory's children."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    files_here: list[CandidateFile] = []
+    nested: list[TreeEntry] = []
+    descendant_files: int = 0
+    toggleable_descendants: int = 0
+
+
+def _usable_child(child: Path) -> bool:
+    if child.is_symlink() or not (child.is_dir() or child.is_file()):
+        return False
+    return not (child.is_dir() and child.name in SCAN_SKIP_DIRS)
+
+
+def _absorb_child(
+    root: Path, child: Path, depth: int, opts: _ScanOptions, acc: _ChildAccum
+) -> None:
+    if child.is_dir():
+        sub = _scan_directory(root, child, depth + 1, opts)
+        acc.nested.extend(sub)
+        for item in sub:
+            if isinstance(item, CandidateFile):
+                acc.descendant_files += 1
+                if item.toggleable:
+                    acc.toggleable_descendants += 1
+        return
+    candidate = _build_candidate(child, depth, opts)
+    acc.files_here.append(candidate)
+    acc.descendant_files += 1
+    if candidate.toggleable:
+        acc.toggleable_descendants += 1
+
+
 def _scan_directory(
     root: Path,
     current: Path,
@@ -99,43 +170,19 @@ def _scan_directory(
     opts: _ScanOptions,
 ) -> list[TreeEntry]:
     entries: list[TreeEntry] = []
-    children = sorted(current.iterdir()) if current.is_dir() else []
-    files_here: list[CandidateFile] = []
-    nested: list[TreeEntry] = []
-    descendant_files = 0
-    toggleable_descendants = 0
+    try:
+        children = sorted(current.iterdir()) if current.is_dir() else []
+    except PermissionError:
+        return entries
+    acc = _ChildAccum()
     for child in children:
-        if child.is_symlink() or not (child.is_dir() or child.is_file()):
+        if not _usable_child(child):
             continue
-        if child.is_dir():
-            sub = _scan_directory(root, child, depth + 1, opts)
-            nested.extend(sub)
-            for item in sub:
-                if isinstance(item, CandidateFile):
-                    descendant_files += 1
-                    if item.toggleable:
-                        toggleable_descendants += 1
-        else:
-            preflight, detail = _preflight_one(
-                child,
-                max_file_bytes=opts.max_file_bytes,
-                allowed_extensions=opts.allowed_extensions,
-            )
-            rel = child.relative_to(opts.rel_base).as_posix()
-            stat = child.stat()
-            candidate = CandidateFile(
-                absolute_path=child,
-                relative_path=rel,
-                size_bytes=stat.st_size,
-                preflight=preflight,
-                reject_detail=detail,
-                depth=depth + 1,
-                mtime_epoch=stat.st_mtime,
-            )
-            files_here.append(candidate)
-            descendant_files += 1
-            if candidate.toggleable:
-                toggleable_descendants += 1
+        _absorb_child(root, child, depth, opts, acc)
+    files_here = acc.files_here
+    nested = acc.nested
+    descendant_files = acc.descendant_files
+    toggleable_descendants = acc.toggleable_descendants
     if current != root:
         rel = current.relative_to(opts.rel_base).as_posix()
         entries.append(
