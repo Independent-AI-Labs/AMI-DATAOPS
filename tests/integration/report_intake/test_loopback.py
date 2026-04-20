@@ -30,7 +30,7 @@ def _write_source(source_root: Path) -> dict[str, bytes]:
     (source_root / "nested").mkdir()
     payloads = {
         "app.log": b"alpha\n",
-        "trace.txt": b"line-a\n",
+        "trace.log": b"line-a\n",
         "nested/debug.log": b"line-1\nline-2\n",
     }
     for rel, body in payloads.items():

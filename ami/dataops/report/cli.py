@@ -46,6 +46,13 @@ EXIT_UNEXPECTED = 10
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ami-report", description="ami-report")
+    parser.add_argument(
+        "--extensions",
+        type=str,
+        default=None,
+        help="comma-separated allowlist override (e.g. log,txt,json). "
+        "Applies to scope discovery + per-file pre-flight. Defaults to 'log'.",
+    )
     sub = parser.add_subparsers(dest="command")
 
     send = sub.add_parser("send", help="select + sign + POST a bundle")
@@ -65,16 +72,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     effective = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
     if not effective:
         return wizard.run()
-    parser = build_parser()
     args = parser.parse_args(effective)
+    extensions = (
+        wizard._normalize_extensions(args.extensions) if args.extensions else None
+    )
     if args.command is None:
-        return wizard.run()
+        return wizard.run(extensions=extensions)
     handler = _DISPATCH.get(args.command)
     if handler is None:
         print(f"error: unknown command {args.command}", file=sys.stderr)
         return EXIT_INVALID_ARGS
+    args.extensions_frozen = extensions
     try:
         return handler(args)
     except (FileNotFoundError, ValueError) as exc:
@@ -93,7 +104,10 @@ def _resolve_roots(config: ReportConfig) -> list[Path]:
 
 def _cmd_send(args: argparse.Namespace) -> int:
     config = load_report_config(args.config)
-    entries = scan_roots(_resolve_roots(config))
+    entries = scan_roots(
+        _resolve_roots(config),
+        allowed_extensions=getattr(args, "extensions_frozen", None),
+    )
     bundle_id = str(uuid_utils.uuid7())
     selected_and_peer = _pick_selection_and_peer(args, config, entries, bundle_id)
     if selected_and_peer is None:

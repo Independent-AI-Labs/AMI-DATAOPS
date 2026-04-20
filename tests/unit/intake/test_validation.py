@@ -23,7 +23,7 @@ class TestValidationRejected:
 class TestValidateExtension:
     @pytest.mark.parametrize(
         "path",
-        ["a.log", "b.txt", "nested/dir/app.log", "UPPER.LOG"],
+        ["a.log", "nested/dir/app.log", "UPPER.LOG"],
     )
     def test_accepts_allowlisted(self, path: str) -> None:
         v.validate_extension(path)
@@ -36,6 +36,7 @@ class TestValidateExtension:
             "code.py",
             "noext",
             "a.pyc",
+            "b.txt",
             "c.json",
             "d.ndjson",
             "e.md",
@@ -216,7 +217,9 @@ class TestExtractBundleStream:
         payload = _make_tar([("a.log", b"x" * 2048)])
         with pytest.raises(v.ValidationRejected) as exc:
             v.extract_bundle_stream(
-                io.BytesIO(payload), tmp_path / "stage", max_file_bytes=1024
+                io.BytesIO(payload),
+                tmp_path / "stage",
+                v.ExtractionLimits(max_file_bytes=1024),
             )
         assert exc.value.reason_code == "file_too_large"
 
@@ -224,7 +227,9 @@ class TestExtractBundleStream:
         payload = _make_tar([("a.log", b"x" * 800), ("b.log", b"y" * 800)])
         with pytest.raises(v.ValidationRejected) as exc:
             v.extract_bundle_stream(
-                io.BytesIO(payload), tmp_path / "stage", max_bundle_bytes=1000
+                io.BytesIO(payload),
+                tmp_path / "stage",
+                v.ExtractionLimits(max_bundle_bytes=1000),
             )
         assert exc.value.reason_code == "bundle_too_large"
 
@@ -232,7 +237,9 @@ class TestExtractBundleStream:
         payload = _make_tar([(f"f{idx}.log", b"x") for idx in range(5)])
         with pytest.raises(v.ValidationRejected) as exc:
             v.extract_bundle_stream(
-                io.BytesIO(payload), tmp_path / "stage", max_files=3
+                io.BytesIO(payload),
+                tmp_path / "stage",
+                v.ExtractionLimits(max_files=3),
             )
         assert exc.value.reason_code == "too_many_files"
 

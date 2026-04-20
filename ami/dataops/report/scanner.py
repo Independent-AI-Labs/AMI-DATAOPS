@@ -61,10 +61,13 @@ TreeEntry = CandidateFile | FolderEntry
 
 
 def _preflight_one(
-    path: Path, *, max_file_bytes: int
+    path: Path,
+    *,
+    max_file_bytes: int,
+    allowed_extensions: frozenset[str] | None = None,
 ) -> tuple[PreflightStatus, str | None]:
     try:
-        validation.validate_extension(path.name)
+        validation.validate_extension(path.name, allowed=allowed_extensions)
     except validation.ValidationRejected as exc:
         return "ext_not_allowed", exc.detail
     try:
@@ -78,12 +81,21 @@ def _preflight_one(
     return "ok", None
 
 
+class _ScanOptions(BaseModel):
+    """Grouped scan knobs passed through the recursive walker."""
+
+    max_file_bytes: int
+    rel_base: Path
+    allowed_extensions: frozenset[str] | None = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 def _scan_directory(
     root: Path,
     current: Path,
     depth: int,
-    max_file_bytes: int,
-    rel_base: Path,
+    opts: _ScanOptions,
 ) -> list[TreeEntry]:
     entries: list[TreeEntry] = []
     children = sorted(current.iterdir()) if current.is_dir() else []
@@ -95,7 +107,7 @@ def _scan_directory(
         if child.is_symlink() or not (child.is_dir() or child.is_file()):
             continue
         if child.is_dir():
-            sub = _scan_directory(root, child, depth + 1, max_file_bytes, rel_base)
+            sub = _scan_directory(root, child, depth + 1, opts)
             nested.extend(sub)
             for item in sub:
                 if isinstance(item, CandidateFile):
@@ -103,8 +115,12 @@ def _scan_directory(
                     if item.toggleable:
                         toggleable_descendants += 1
         else:
-            preflight, detail = _preflight_one(child, max_file_bytes=max_file_bytes)
-            rel = child.relative_to(rel_base).as_posix()
+            preflight, detail = _preflight_one(
+                child,
+                max_file_bytes=opts.max_file_bytes,
+                allowed_extensions=opts.allowed_extensions,
+            )
+            rel = child.relative_to(opts.rel_base).as_posix()
             candidate = CandidateFile(
                 absolute_path=child,
                 relative_path=rel,
@@ -118,7 +134,7 @@ def _scan_directory(
             if candidate.toggleable:
                 toggleable_descendants += 1
     if current != root:
-        rel = current.relative_to(rel_base).as_posix()
+        rel = current.relative_to(opts.rel_base).as_posix()
         entries.append(
             FolderEntry(
                 absolute_path=current,
@@ -137,6 +153,7 @@ def scan_roots(
     roots: list[Path],
     *,
     max_file_bytes: int = validation.DEFAULT_MAX_FILE_BYTES,
+    allowed_extensions: frozenset[str] | None = None,
 ) -> list[TreeEntry]:
     """Walk every root recursively and return a pre-order tree of entries.
 
@@ -154,7 +171,11 @@ def scan_roots(
             if root in seen:
                 continue
             seen.add(root)
-            preflight, detail = _preflight_one(root, max_file_bytes=max_file_bytes)
+            preflight, detail = _preflight_one(
+                root,
+                max_file_bytes=max_file_bytes,
+                allowed_extensions=allowed_extensions,
+            )
             entries.append(
                 CandidateFile(
                     absolute_path=root,
@@ -166,9 +187,12 @@ def scan_roots(
                 )
             )
             continue
-        sub_entries = _scan_directory(
-            root, root, depth=0, max_file_bytes=max_file_bytes, rel_base=root
+        opts = _ScanOptions(
+            max_file_bytes=max_file_bytes,
+            rel_base=root,
+            allowed_extensions=allowed_extensions,
         )
+        sub_entries = _scan_directory(root, root, 0, opts)
         deduped: list[TreeEntry] = []
         for item in sub_entries:
             if isinstance(item, CandidateFile):

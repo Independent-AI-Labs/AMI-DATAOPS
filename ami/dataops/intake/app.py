@@ -248,9 +248,11 @@ def _extract_and_verify(
         files = validation.extract_bundle_stream(
             handle,
             staging,
-            max_file_bytes=config.max_file_bytes,
-            max_bundle_bytes=config.max_bundle_bytes,
-            max_files=config.max_files_per_bundle,
+            validation.ExtractionLimits(
+                max_file_bytes=config.max_file_bytes,
+                max_bundle_bytes=config.max_bundle_bytes,
+                max_files=config.max_files_per_bundle,
+            ),
         )
     manifest_by_path = {entry.relative_path: entry for entry in manifest.files}
     receipts: list[quarantine.ReceiptFileEntry] = []

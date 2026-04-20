@@ -128,7 +128,7 @@ def scratch_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "app.log").write_text("alpha\n")
-    (logs / "trace.txt").write_text("trace entry\n")
+    (logs / "trace.log").write_text("trace entry\n")
     monkeypatch.setenv("AMI_ROOT", str(tmp_path))
     return logs
 
@@ -275,7 +275,7 @@ class TestFindScopeCandidates:
         (tmp_path / "a.log").write_text("1\n")
         (tmp_path / "nested").mkdir()
         (tmp_path / "nested" / "b.log").write_text("2\n")
-        (tmp_path / "nested" / "c.txt").write_text("3\n")
+        (tmp_path / "nested" / "c.log").write_text("3\n")
         results = dict(wizard.find_scope_candidates(tmp_path))
         assert results[tmp_path.resolve()] == expected_total
         assert results[(tmp_path / "nested").resolve()] == expected_nested
@@ -301,6 +301,52 @@ class TestFindScopeCandidates:
 
     def test_empty_workspace_returns_empty_list(self, tmp_path: Path) -> None:
         assert wizard.find_scope_candidates(tmp_path) == []
+
+
+class TestNormalizeExtensions:
+    def test_csv_with_dots(self) -> None:
+        assert wizard._normalize_extensions(".log,.txt") == frozenset({".log", ".txt"})
+
+    def test_csv_without_dots(self) -> None:
+        assert wizard._normalize_extensions("log,txt,json") == frozenset(
+            {".log", ".txt", ".json"}
+        )
+
+    def test_mixed_case_and_whitespace(self) -> None:
+        assert wizard._normalize_extensions(" LOG , Txt ") == frozenset(
+            {".log", ".txt"}
+        )
+
+    def test_empty_entries_skipped(self) -> None:
+        assert wizard._normalize_extensions("log,,") == frozenset({".log"})
+
+
+class TestProjectsSkipped:
+    def test_projects_dir_not_walked(self, tmp_path: Path) -> None:
+        (tmp_path / "ok.log").write_text("ok\n")
+        (tmp_path / "projects").mkdir()
+        (tmp_path / "projects" / "sub.log").write_text("buried\n")
+        results = dict(wizard.find_scope_candidates(tmp_path))
+        assert results[tmp_path.resolve()] == 1
+        assert (tmp_path / "projects").resolve() not in results
+
+
+_OVERRIDE_SUFFIX_COUNT = 3
+
+
+class TestFindScopeCandidatesWithSuffixOverride:
+    def test_override_expands_suffix_set(self, tmp_path: Path) -> None:
+        (tmp_path / "a.log").write_text("1\n")
+        (tmp_path / "b.txt").write_text("2\n")
+        (tmp_path / "c.md").write_text("3\n")
+        default = dict(wizard.find_scope_candidates(tmp_path))
+        assert default[tmp_path.resolve()] == 1
+        override = dict(
+            wizard.find_scope_candidates(
+                tmp_path, allowed_suffixes=(".log", ".txt", ".md")
+            )
+        )
+        assert override[tmp_path.resolve()] == _OVERRIDE_SUFFIX_COUNT
 
 
 class TestRenderArchiveSummary:

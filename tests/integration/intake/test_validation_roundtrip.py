@@ -35,7 +35,7 @@ class TestExtractRoundTrip:
         files = {
             "root.log": b"one\ntwo\nthree\n",
             "nested/app.log": b"event payload with spaces",
-            "nested/trace.txt": b"line-ts-2026-04-19\n",
+            "nested/trace.log": b"line-ts-2026-04-19\n",
         }
         expected_hashes: dict[str, str] = {}
         for rel, payload in files.items():
@@ -74,6 +74,6 @@ class TestExtractRoundTrip:
             v.extract_bundle_stream(
                 io.BytesIO(bundle_bytes),
                 tmp_path / "stage",
-                max_bundle_bytes=5000,
+                v.ExtractionLimits(max_bundle_bytes=5000),
             )
         assert exc.value.reason_code == "bundle_too_large"

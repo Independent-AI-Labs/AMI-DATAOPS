@@ -179,7 +179,7 @@ class TestHappyPath:
         self, tmp_path: Path
     ) -> None:
         client = TestClient(create_app(_make_config(tmp_path)))
-        files = {"app.log": b"hello\n", "trace.txt": b"line-a\n"}
+        files = {"app.log": b"hello\n", "trace.log": b"line-a\n"}
         manifest = _build_manifest(files)
         response = _post(client, manifest, _build_tarball(files), _sign(manifest))
         assert response.status_code == status.HTTP_202_ACCEPTED

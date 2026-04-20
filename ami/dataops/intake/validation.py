@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO, Literal
 
+from pydantic import BaseModel, Field
+
 ReasonCode = Literal[
     "ext_not_allowed",
     "path_unsafe",
@@ -25,7 +27,7 @@ ReasonCode = Literal[
     "schema_unsupported",
 ]
 
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".log", ".txt"})
+ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".log"})
 
 TEXT_PROBE_BYTES = 8192
 NULL_BYTE = b"\x00"
@@ -33,6 +35,15 @@ HASH_CHUNK_BYTES = 65536
 DEFAULT_MAX_FILE_BYTES = 1 * 1024 * 1024
 DEFAULT_MAX_BUNDLE_BYTES = 500 * 1024 * 1024
 DEFAULT_MAX_FILES_PER_BUNDLE = 1000
+
+
+class ExtractionLimits(BaseModel):
+    """Grouped quota limits for tarball extraction — keeps signatures compact."""
+
+    max_file_bytes: int = Field(default=DEFAULT_MAX_FILE_BYTES, gt=0)
+    max_bundle_bytes: int = Field(default=DEFAULT_MAX_BUNDLE_BYTES, gt=0)
+    max_files: int = Field(default=DEFAULT_MAX_FILES_PER_BUNDLE, gt=0)
+    allowed_extensions: frozenset[str] | None = None
 
 
 class ValidationRejected(Exception):
@@ -48,10 +59,17 @@ class ValidationRejected(Exception):
         self.detail = detail
 
 
-def validate_extension(relative_path: str) -> None:
-    """Reject when the final extension is not on the allowlist."""
+def validate_extension(
+    relative_path: str, *, allowed: frozenset[str] | None = None
+) -> None:
+    """Reject when the final extension is not on the allowlist.
+
+    `allowed` overrides the module-level default when the operator passed
+    `--extensions` on the CLI; otherwise `ALLOWED_EXTENSIONS` applies.
+    """
+    accepted = allowed if allowed is not None else ALLOWED_EXTENSIONS
     ext = Path(relative_path).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    if ext not in accepted:
         raise ValidationRejected(
             "ext_not_allowed",
             f"extension {ext!r} for {relative_path!r} not in allowlist",
@@ -135,10 +153,7 @@ def apply_data_filter(
 def iter_validated_members(
     tar: tarfile.TarFile,
     staging_root: Path,
-    *,
-    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
-    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
-    max_files: int = DEFAULT_MAX_FILES_PER_BUNDLE,
+    limits: ExtractionLimits | None = None,
 ) -> Iterator[tarfile.TarInfo]:
     """Yield each tar member after running path-safety + size pre-checks.
 
@@ -147,6 +162,7 @@ def iter_validated_members(
     zip-bomb is caught on the first oversized member or the first aggregate
     overflow, terminating extraction early.
     """
+    lim = limits or ExtractionLimits()
     running_total = 0
     file_count = 0
     staging_str = str(staging_root)
@@ -161,21 +177,18 @@ def iter_validated_members(
                 f"tar member {name!r} is not a regular file after filtering",
             )
         file_count += 1
-        validate_file_count(file_count, max_files)
-        validate_extension(safe_member.name)
-        validate_file_size(safe_member.size, max_file_bytes)
+        validate_file_count(file_count, lim.max_files)
+        validate_extension(safe_member.name, allowed=lim.allowed_extensions)
+        validate_file_size(safe_member.size, lim.max_file_bytes)
         running_total += safe_member.size
-        validate_bundle_aggregate(running_total, max_bundle_bytes)
+        validate_bundle_aggregate(running_total, lim.max_bundle_bytes)
         yield safe_member
 
 
 def extract_bundle_stream(
     gz_stream: BinaryIO,
     staging_root: Path,
-    *,
-    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
-    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
-    max_files: int = DEFAULT_MAX_FILES_PER_BUNDLE,
+    limits: ExtractionLimits | None = None,
 ) -> list[Path]:
     """Stream-extract a gzip-tar from `gz_stream` into `staging_root`.
 
@@ -186,13 +199,7 @@ def extract_bundle_stream(
     staging_root.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
     with tarfile.open(fileobj=gz_stream, mode="r|gz") as tar:
-        for safe_member in iter_validated_members(
-            tar,
-            staging_root,
-            max_file_bytes=max_file_bytes,
-            max_bundle_bytes=max_bundle_bytes,
-            max_files=max_files,
-        ):
+        for safe_member in iter_validated_members(tar, staging_root, limits):
             tar.extract(safe_member, path=staging_root, filter="data")
             extracted.append(staging_root / safe_member.name)
     for path in extracted:

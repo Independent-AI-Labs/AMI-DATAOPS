@@ -112,7 +112,7 @@ class TestIntakeE2E:
         response = _post(client, manifest_a, _build_tarball(files_a), BUNDLE_ID)
         assert response.status_code == status.HTTP_202_ACCEPTED
 
-        files_b = {"b.log": b"alpha batch two\n", "c.txt": b"note\n"}
+        files_b = {"b.log": b"alpha batch two\n", "c.log": b"note\n"}
         manifest_b = _build_manifest(files_b, bundle_id=SECOND_BUNDLE_ID)
         response = _post(client, manifest_b, _build_tarball(files_b), SECOND_BUNDLE_ID)
         assert response.status_code == status.HTTP_202_ACCEPTED

@@ -83,9 +83,25 @@ SCOPE_SKIP_DIRS: frozenset[str] = frozenset(
         "build",
         "dist",
         "tmp",
+        "projects",
     }
 )
-SCOPE_ALLOWED_SUFFIXES: tuple[str, ...] = (".log", ".txt")
+DEFAULT_SCOPE_ALLOWED_SUFFIXES: tuple[str, ...] = (".log",)
+
+
+def _normalize_extensions(raw: str) -> frozenset[str]:
+    """Parse a CSV list of extensions into a normalized frozenset.
+
+    Accepts `"log,txt"`, `".log,.txt"`, or `"LOG, TXT"`; returns the
+    lowercased, dot-prefixed frozenset (e.g. `{".log", ".txt"}`).
+    """
+    out: set[str] = set()
+    for item in raw.split(","):
+        trimmed = item.strip().lower()
+        if not trimmed:
+            continue
+        out.add(trimmed if trimmed.startswith(".") else f".{trimmed}")
+    return frozenset(out)
 
 
 class ArchiveSummary(BaseModel):
@@ -145,21 +161,26 @@ def _format_size(size_bytes: int) -> str:
     return f"{kib / KIB_PER_MIB:.1f} MiB"
 
 
-def find_scope_candidates(root: Path) -> list[tuple[Path, int]]:
-    """Walk `root`, return `[(abs_dir_path, direct_log_or_txt_count), ...]`.
+def find_scope_candidates(
+    root: Path, *, allowed_suffixes: tuple[str, ...] | None = None
+) -> list[tuple[Path, int]]:
+    """Walk `root`, return `[(abs_dir_path, direct_match_count), ...]`.
 
     The returned list starts with `root` itself and its *total recursive*
     count, followed by every descendant directory that directly contains
-    at least one `.log` or `.txt` file, each with its direct-children
-    count. Hidden/junk directories (.git, .venv, node_modules, etc) are
-    pruned to keep the walk fast and the picker readable.
+    at least one file with an allowed suffix, each with its direct-children
+    count. Hidden/junk directories (.git, .venv, node_modules, projects,
+    etc) are pruned to keep the walk fast and the picker readable.
+    Operators wanting project logs pass the path via the custom-path
+    prompt or `--config`'s `extra_roots`.
     """
+    suffixes = allowed_suffixes or DEFAULT_SCOPE_ALLOWED_SUFFIXES
     counts: dict[Path, int] = {}
     total = 0
     abs_root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(abs_root, topdown=True):
         dirnames[:] = [d for d in dirnames if d not in SCOPE_SKIP_DIRS]
-        hits = sum(1 for f in filenames if f.lower().endswith(SCOPE_ALLOWED_SUFFIXES))
+        hits = sum(1 for f in filenames if f.lower().endswith(suffixes))
         if hits == 0:
             continue
         counts[Path(dirpath).resolve()] = hits
@@ -225,19 +246,25 @@ def _resolve_sender_id(cfg: ReportConfig | None, prompt: Prompter) -> str:
 
 
 def _collect_scope_labels(
-    ami_root: Path, extras: list[Path]
+    ami_root: Path,
+    extras: list[Path],
+    allowed_suffixes: tuple[str, ...] | None = None,
 ) -> tuple[list[str], dict[str, Path]]:
     labels: list[str] = []
     by_label: dict[str, Path] = {}
     if ami_root and ami_root.is_dir():
-        for path, count in find_scope_candidates(ami_root):
+        for path, count in find_scope_candidates(
+            ami_root, allowed_suffixes=allowed_suffixes
+        ):
             label = f"{path} ({count})"
             labels.append(label)
             by_label[label] = path
     for extra in extras:
         if not extra.is_dir():
             continue
-        for path, count in find_scope_candidates(extra):
+        for path, count in find_scope_candidates(
+            extra, allowed_suffixes=allowed_suffixes
+        ):
             label = f"{path} ({count})"
             if label in by_label:
                 continue
@@ -261,10 +288,15 @@ def _prompt_extra_paths(prompt: Prompter, existing: list[Path]) -> list[Path]:
 
 
 def _resolve_scope(
-    cfg: ReportConfig, prompt: Prompter, pick_scope: PickScopeFn
+    cfg: ReportConfig,
+    prompt: Prompter,
+    pick_scope: PickScopeFn,
+    allowed_suffixes: tuple[str, ...] | None = None,
 ) -> list[Path]:
     ami_root = Path(os.environ.get("AMI_ROOT", "")).expanduser()
-    labels, by_label = _collect_scope_labels(ami_root, cfg.sender.extra_roots)
+    labels, by_label = _collect_scope_labels(
+        ami_root, cfg.sender.extra_roots, allowed_suffixes=allowed_suffixes
+    )
     roots: list[Path] = []
     if labels:
         picked = pick_scope(labels, [labels[0]])
@@ -405,8 +437,14 @@ def _send(request: SendRequest) -> int:
 def run(
     config_path: Path | None = None,
     primitives: WizardPrimitives | None = None,
+    extensions: frozenset[str] | None = None,
 ) -> int:
-    """Run the interactive wizard. Returns the CLI exit code."""
+    """Run the interactive wizard. Returns the CLI exit code.
+
+    `extensions` (when set) overrides the built-in `.log`-only allowlist
+    for this run, including the scope picker's discovery suffixes and
+    the per-file pre-flight check. Supplied by `--extensions` on the CLI.
+    """
     prim = primitives or default_primitives()
     hostname = socket.gethostname() or "anonymous"
     initial_cfg = _load_or_default_config(config_path, hostname)
@@ -415,11 +453,12 @@ def run(
         sender=initial_cfg.sender.model_copy(update={"sender_id": sender_id}),
         peers=initial_cfg.peers,
     )
-    roots = _resolve_scope(cfg, prim.prompt, prim.pick_scope)
+    suffixes = tuple(sorted(extensions)) if extensions is not None else None
+    roots = _resolve_scope(cfg, prim.prompt, prim.pick_scope, suffixes)
     if not roots:
         print("no scan roots chosen; nothing to report", file=sys.stderr)
         return EXIT_OK
-    entries = scan_roots(roots)
+    entries = scan_roots(roots, allowed_extensions=extensions)
     if not entries:
         print("no candidate files found under the chosen roots", file=sys.stderr)
         return EXIT_OK
