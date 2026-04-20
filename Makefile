@@ -71,6 +71,11 @@ help: ## Show this help
 	@echo "  intake-status        Report unit state + audit.log size"
 	@echo "  intake-logs          Tail journalctl for ami-intake.service"
 	@echo ""
+	@echo "Report (P2P log sender) targets:"
+	@echo "  report-send CONFIG=   TUI send of selected logs to a peer"
+	@echo "  report-preview CONFIG= List candidate files without sending"
+	@echo "  report-peers CONFIG=   List configured peers + env-var state"
+	@echo ""
 	@echo "Other targets:"
 	@echo "  clean                Remove build artifacts"
 	@echo "  clean-venv           Remove virtual environment"
@@ -305,6 +310,25 @@ intake-status: ## Report ami-intake unit state + audit.log size
 .PHONY: intake-logs
 intake-logs: ## Tail the ami-intake journal
 	journalctl --user -u ami-intake.service -f
+
+# =============================================================================
+# Report (P2P log sender) Targets
+# =============================================================================
+
+.PHONY: report-send
+report-send: ## Interactive TUI report send (usage: make report-send CONFIG=path)
+	@if [ -z "$(CONFIG)" ]; then echo "ERROR: Set CONFIG=<path>"; exit 1; fi
+	$(UV) run python -m ami.dataops.report.main send --config $(CONFIG)
+
+.PHONY: report-preview
+report-preview: ## List candidate files without sending (usage: make report-preview CONFIG=path)
+	@if [ -z "$(CONFIG)" ]; then echo "ERROR: Set CONFIG=<path>"; exit 1; fi
+	$(UV) run python -m ami.dataops.report.main preview --config $(CONFIG)
+
+.PHONY: report-peers
+report-peers: ## List configured peers + env-var state
+	@if [ -z "$(CONFIG)" ]; then echo "ERROR: Set CONFIG=<path>"; exit 1; fi
+	$(UV) run python -m ami.dataops.report.main peers --config $(CONFIG)
 
 # =============================================================================
 # Volume Backup & Restore
