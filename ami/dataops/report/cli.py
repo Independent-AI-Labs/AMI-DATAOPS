@@ -1,47 +1,30 @@
 """argparse dispatcher for ami-report.
 
-Subcommands: send (default), preview, peers. send accepts --ci --defaults
-for non-interactive use and --dry-run to sign without posting.
+`ami-report` (bare) and `ami-report send …` both build a `RunRequest`
+and hand it to `pipeline.run` together with the appropriate `Operator`
+(TerminalOperator for humans, CIOperator for `--ci --defaults FILE`).
+`preview` and `peers` are non-interactive read-only paths that don't
+need the pipeline.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
-import uuid_utils
 import yaml
 
-from ami.dataops.intake import validation
-from ami.dataops.report import manifest as manifest_mod
-from ami.dataops.report import tui, wizard, wizard_helpers
-from ami.dataops.report.bundling import build_bundle_tarball
-from ami.dataops.report.config import PeerEntry, ReportConfig, load_report_config
-from ami.dataops.report.scanner import (
-    CandidateFile,
-    TreeEntry,
-    expand_selection,
-    scan_roots,
-)
-from ami.dataops.report.transport import (
-    AuthRejected,
-    NetworkError,
-    PostContext,
-    ValidationRejectedByPeer,
-    post_bundle,
-)
+from ami.dataops.report import pipeline
+from ami.dataops.report.config import ReportConfig, load_report_config
+from ami.dataops.report.models import CIDefaults, RunRequest
+from ami.dataops.report.operator import CIOperator, Operator, TerminalOperator
+from ami.dataops.report.scanner import CandidateFile, scan_roots
+from ami.dataops.report.windows import normalize_key
 
 EXIT_OK = 0
 EXIT_INVALID_ARGS = 2
-EXIT_NETWORK_ERROR = 3
-EXIT_AUTH_REJECTED = 4
-EXIT_VALIDATION_REJECTED_PEER = 5
-EXIT_LOCAL_PREFLIGHT_FAILED = 6
-EXIT_UNEXPECTED = 10
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,87 +62,70 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     effective = sys.argv[1:] if argv is None else argv
-    parser = build_parser()
-    if not effective:
-        return wizard.run()
-    args = parser.parse_args(effective)
-    extensions = (
-        wizard_helpers.normalize_extensions(args.extensions)
-        if args.extensions
-        else None
-    )
+    args = build_parser().parse_args(effective)
     try:
-        since_key = wizard_helpers.normalize_window_key(args.since)
+        request = _request_from_args(args)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_INVALID_ARGS
-    if args.command is None:
-        return wizard.run(extensions=extensions, since_key=since_key)
-    handler = _DISPATCH.get(args.command)
-    if handler is None:
-        print(f"error: unknown command {args.command}", file=sys.stderr)
+    if args.command == "preview":
+        return _cmd_preview(args)
+    if args.command == "peers":
+        return _cmd_peers(args)
+    operator = _operator_for(args, request)
+    if operator is None:
         return EXIT_INVALID_ARGS
-    args.extensions_frozen = extensions
     try:
-        return handler(args)
+        return pipeline.run(request, operator)
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_INVALID_ARGS
 
 
-def _resolve_roots(config: ReportConfig) -> list[Path]:
-    roots: list[Path] = []
-    ami_root = Path(os.environ.get("AMI_ROOT", "")).expanduser().absolute()
-    if ami_root and (ami_root / "logs").is_dir():
-        roots.append(ami_root / "logs")
-    roots.extend(config.sender.extra_roots)
-    return roots
-
-
-def _cmd_send(args: argparse.Namespace) -> int:
-    config = load_report_config(args.config)
-    entries = scan_roots(
-        _resolve_roots(config),
-        allowed_extensions=getattr(args, "extensions_frozen", None),
+def _request_from_args(args: argparse.Namespace) -> RunRequest:
+    extensions = _normalize_extensions(args.extensions) if args.extensions else None
+    since_key = normalize_key(args.since)
+    return RunRequest(
+        config_path=getattr(args, "config", None),
+        extensions=extensions,
+        since_key=since_key,
+        dry_run=getattr(args, "dry_run", False),
+        ci_defaults_path=getattr(args, "defaults", None)
+        if getattr(args, "ci", False)
+        else None,
     )
-    bundle_id = str(uuid_utils.uuid7())
-    selected_and_peer = _pick_selection_and_peer(args, config, entries, bundle_id)
-    if selected_and_peer is None:
-        return EXIT_OK
-    selected, peer = selected_and_peer
-    expanded = expand_selection(selected, entries)
-    if not expanded:
-        return EXIT_OK
-    source_root = _common_source_root(expanded)
+
+
+def _operator_for(args: argparse.Namespace, request: RunRequest) -> Operator | None:
+    if not getattr(args, "ci", False):
+        return TerminalOperator()
+    defaults_path = request.ci_defaults_path
+    if defaults_path is None:
+        print("error: --ci requires --defaults FILE", file=sys.stderr)
+        return None
+    if not defaults_path.is_file():
+        print(f"error: defaults file not found: {defaults_path}", file=sys.stderr)
+        return None
+    raw = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        print(f"error: {defaults_path} is not a YAML mapping", file=sys.stderr)
+        return None
     try:
-        for candidate in expanded:
-            validation.probe_text_content(candidate.absolute_path)
-    except validation.ValidationRejected as exc:
-        print(f"local pre-flight failed: {exc}", file=sys.stderr)
-        return EXIT_LOCAL_PREFLIGHT_FAILED
-    manifest = manifest_mod.build_manifest(
-        sender_id=config.sender.sender_id,
-        source_root=source_root,
-        files=[c.absolute_path for c in expanded],
-        bundle_id=bundle_id,
-    )
-    manifest_bytes = manifest_mod.canonical_manifest_bytes(manifest)
-    secret = _require_env(peer.shared_secret_env_var)
-    token = _require_env(f"AMI_REPORT_TOKENS__{peer.name.upper()}")
-    signature = manifest_mod.sign_manifest(manifest_bytes, secret)
-    if args.dry_run:
-        sys.stdout.buffer.write(manifest_bytes)
-        print(signature)
-        return EXIT_OK
-    bundle = build_bundle_tarball(manifest, source_root)
-    return _post_and_report(
-        endpoint=f"{peer.endpoint}v1/bundles",
-        bearer_token=token,
-        manifest=manifest,
-        manifest_bytes=manifest_bytes,
-        signature=signature,
-        bundle_bytes=bundle,
-    )
+        defaults = CIDefaults.model_validate(raw)
+    except ValueError as exc:
+        print(f"error: {defaults_path} is invalid: {exc}", file=sys.stderr)
+        return None
+    return CIOperator(defaults)
+
+
+def _normalize_extensions(raw: str) -> frozenset[str]:
+    out: set[str] = set()
+    for item in raw.split(","):
+        trimmed = item.strip().lower()
+        if not trimmed:
+            continue
+        out.add(trimmed if trimmed.startswith(".") else f".{trimmed}")
+    return frozenset(out)
 
 
 def _cmd_preview(args: argparse.Namespace) -> int:
@@ -190,87 +156,10 @@ def _cmd_peers(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _pick_selection_and_peer(
-    args: argparse.Namespace,
-    config: ReportConfig,
-    entries: list[TreeEntry],
-    bundle_id: str,
-) -> tuple[list[TreeEntry], PeerEntry] | None:
-    if args.ci:
-        return _ci_selection_and_peer(args, config, entries)
-    result = tui.run_interactive(config, entries, bundle_id)
-    if result is None:
-        return None
-    return result.selected, result.peer
-
-
-def _ci_selection_and_peer(
-    args: argparse.Namespace,
-    config: ReportConfig,
-    entries: list[TreeEntry],
-) -> tuple[list[TreeEntry], PeerEntry] | None:
-    defaults_path = args.defaults or config.sender.default_ci_defaults
-    if defaults_path is None:
-        print("error: --ci requires --defaults FILE", file=sys.stderr)
-        return None
-    raw = yaml.safe_load(Path(defaults_path).read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        print(f"error: {defaults_path} is not a YAML mapping", file=sys.stderr)
-        return None
-    peer_name = raw.get("peer")
-    if not isinstance(peer_name, str):
-        print("error: defaults file missing string 'peer'", file=sys.stderr)
-        return None
-    selected = tui.resolve_selection_from_defaults(raw, entries)
-    return selected, config.peer(peer_name)
-
-
-def _common_source_root(selected: list[CandidateFile]) -> Path:
-    paths: list[Path] = [c.absolute_path for c in selected]
-    root: Path = paths[0].parent
-    while not all(_is_under(root, p) for p in paths):
-        new_root = root.parent
-        if new_root == root:
-            break
-        root = new_root
-    return root
-
-
-def _is_under(root: Path, path: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
-def _require_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        msg = f"required env var {name} is not set"
-        raise ValueError(msg)
-    return value
-
-
-def _post_and_report(**kwargs: object) -> int:
-    try:
-        ctx = PostContext.model_validate(kwargs)
-        receipt = post_bundle(ctx)
-    except AuthRejected as exc:
-        print(f"auth rejected: {exc}", file=sys.stderr)
-        return EXIT_AUTH_REJECTED
-    except ValidationRejectedByPeer as exc:
-        print(f"validation reject {exc.reason_code}: {exc.detail}", file=sys.stderr)
-        return EXIT_VALIDATION_REJECTED_PEER
-    except NetworkError as exc:
-        print(f"network error: {exc}", file=sys.stderr)
-        return EXIT_NETWORK_ERROR
-    print(json.dumps(receipt, indent=2))
-    return EXIT_OK
-
-
-_DISPATCH: dict[str, Callable[[argparse.Namespace], int]] = {
-    "send": _cmd_send,
-    "preview": _cmd_preview,
-    "peers": _cmd_peers,
-}
+def _resolve_roots(config: ReportConfig) -> list[Path]:
+    roots: list[Path] = []
+    ami_root = Path(os.environ.get("AMI_ROOT", "")).expanduser().absolute()
+    if ami_root and (ami_root / "logs").is_dir():
+        roots.append(ami_root / "logs")
+    roots.extend(config.sender.extra_roots)
+    return roots

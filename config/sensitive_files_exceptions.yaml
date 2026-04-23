@@ -2,3 +2,8 @@
 safe_exceptions:
   - banned_words_exceptions.yaml
   - sensitive_files_exceptions.yaml
+  # deploy/intake.vars.yml holds the public tunnel id + hostname; matches
+  # the "var" keyword but contains no secrets (those live in deploy/intake.env,
+  # which is git-ignored at the project root).
+  - intake.vars.yml
+  - intake.env.example

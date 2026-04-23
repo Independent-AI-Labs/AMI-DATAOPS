@@ -60,7 +60,7 @@
 
         - name: Assert credentials files exist
           ansible.builtin.stat:
-            path: "{{ ami_root }}/{{ item.credentials_file }}"
+            path: "{{ item.credentials_file if item.credentials_file.startswith('/') else ami_root ~ '/' ~ item.credentials_file }}"
           register: creds_stat
           failed_when: not creds_stat.stat.exists
           changed_when: false

@@ -57,14 +57,16 @@ class TestScanRoots:
         assert depths[1][0] == "CandidateFile"
         assert depths[1][1] == 1
 
-    def test_disallowed_extension_marked_reject(self, tmp_path: Path) -> None:
+    def test_disallowed_extension_files_are_skipped_entirely(
+        self, tmp_path: Path
+    ) -> None:
+        """Extension mismatches drop out; size/text rejects still surface."""
         (tmp_path / "ok.log").write_text("ok\n")
         (tmp_path / "bad.exe").write_bytes(b"MZ")
         entries = scan_roots([tmp_path])
         files = {f.relative_path.rsplit("/", 1)[-1]: f for f in files_only(entries)}
         assert files["ok.log"].preflight == "ok"
-        assert files["bad.exe"].preflight == "ext_not_allowed"
-        assert not files["bad.exe"].toggleable
+        assert "bad.exe" not in files
 
     def test_folder_count_reflects_descendants(self, tmp_path: Path) -> None:
         (tmp_path / "a.log").write_text("1\n")

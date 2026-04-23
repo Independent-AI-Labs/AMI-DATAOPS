@@ -7,6 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-{{ intake_env_file }}
 ExecStart={{ python_bin }} {{ ami_root }}/projects/AMI-DATAOPS/ami/dataops/intake/main.py serve --config {{ intake_config_path }}
 Restart=always
 RestartSec=5

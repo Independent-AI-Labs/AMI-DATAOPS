@@ -66,6 +66,7 @@ help: ## Show this help
 	@echo ""
 	@echo "Intake (P2P log receiver) targets:"
 	@echo "  intake-deploy        Render config + start ami-intake.service"
+	@echo "  intake-stack-deploy  Deploy intake + cloudflared tunnel + DNS from deploy/intake.vars.yml"
 	@echo "  intake-stop          Stop ami-intake"
 	@echo "  intake-restart       Restart ami-intake"
 	@echo "  intake-status        Report unit state + audit.log size"
@@ -259,6 +260,7 @@ compose-status: ## Show compose stack status
 # =============================================================================
 
 ANSIBLE_SERVE := $(ANSIBLE_PLAYBOOK) res/ansible/serve.yml
+INTAKE_VARS := deploy/intake.vars.yml
 
 .PHONY: serve-deploy
 serve-deploy: ## Render cloudflared configs + enable/start tunnel units
@@ -294,6 +296,16 @@ ANSIBLE_INTAKE := $(ANSIBLE_PLAYBOOK) res/ansible/intake.yml
 .PHONY: intake-deploy
 intake-deploy: ## Render intake config + install/start the systemd user unit
 	$(ANSIBLE_INTAKE) --tags deploy
+
+.PHONY: intake-stack-deploy
+intake-stack-deploy: ## Deploy intake + cloudflared tunnel for reports.ami-remote.work
+	@if [ ! -f $(INTAKE_VARS) ]; then \
+		echo "ERROR: $(INTAKE_VARS) missing. See docs/runbooks/INTAKE-PRODUCTION.md."; \
+		exit 1; \
+	fi
+	$(ANSIBLE_INTAKE) --tags deploy -e @$(INTAKE_VARS)
+	$(ANSIBLE_SERVE) --tags deploy -e @$(INTAKE_VARS)
+	@echo "DNS reconciliation: run 'ami-serve bootstrap-cloudflare' to re-assert the CNAME."
 
 .PHONY: intake-stop
 intake-stop: ## Stop the ami-intake daemon

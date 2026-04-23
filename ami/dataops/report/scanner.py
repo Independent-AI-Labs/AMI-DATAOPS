@@ -23,7 +23,7 @@ from ami.dataops.intake import validation
 
 PreflightStatus = Literal["ok", "ext_not_allowed", "not_text", "file_too_large"]
 
-SCAN_SKIP_DIRS: frozenset[str] = frozenset(
+SKIP_DIRS: frozenset[str] = frozenset(
     {
         ".git",
         ".venv",
@@ -37,6 +37,10 @@ SCAN_SKIP_DIRS: frozenset[str] = frozenset(
         ".ruff_cache",
         "node_modules",
         "__pycache__",
+        "build",
+        "dist",
+        "tmp",
+        "projects",
     }
 )
 
@@ -109,12 +113,23 @@ class _ScanOptions(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-def _build_candidate(child: Path, depth: int, opts: _ScanOptions) -> CandidateFile:
+def _build_candidate(
+    child: Path, depth: int, opts: _ScanOptions
+) -> CandidateFile | None:
+    """Return a CandidateFile or None when the file should be omitted entirely.
+
+    Extension mismatches are dropped outright — with a whole-workspace
+    scope the tree would otherwise render hundreds of .py/.md/.yaml rows.
+    Size / text failures still surface as disabled rows because they
+    apply to files the operator explicitly selected by extension.
+    """
     preflight, detail = _preflight_one(
         child,
         max_file_bytes=opts.max_file_bytes,
         allowed_extensions=opts.allowed_extensions,
     )
+    if preflight == "ext_not_allowed":
+        return None
     stat = child.stat()
     return CandidateFile(
         absolute_path=child,
@@ -141,7 +156,7 @@ class _ChildAccum(BaseModel):
 def _usable_child(child: Path) -> bool:
     if child.is_symlink() or not (child.is_dir() or child.is_file()):
         return False
-    return not (child.is_dir() and child.name in SCAN_SKIP_DIRS)
+    return not (child.is_dir() and child.name in SKIP_DIRS)
 
 
 def _absorb_child(
@@ -157,6 +172,8 @@ def _absorb_child(
                     acc.toggleable_descendants += 1
         return
     candidate = _build_candidate(child, depth, opts)
+    if candidate is None:
+        return
     acc.files_here.append(candidate)
     acc.descendant_files += 1
     if candidate.toggleable:

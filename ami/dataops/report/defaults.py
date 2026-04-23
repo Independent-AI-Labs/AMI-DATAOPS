@@ -8,7 +8,7 @@ peer they list; the default is merged (never overwritten) when absent.
 Env-var contract for the default peer:
     AMI_REPORT_SECRET_REPORTS   -- HMAC shared secret
     AMI_REPORT_TOKENS__REPORTS  -- bearer token
-Both are prompted interactively (getpass) by the wizard when unset.
+Both are prompted interactively (getpass) by `TerminalOperator` when unset.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 from ami.dataops.report.config import PeerEntry, ReportConfig, SenderConfig
 
 DEFAULT_PEER_NAME = "reports"
-DEFAULT_PEER_ENDPOINT = "https://reports.independentailabs.com/"
+DEFAULT_PEER_ENDPOINT = "https://reports.ami-remote.work/"
 DEFAULT_PEER_SECRET_ENV = "AMI_REPORT_SECRET_REPORTS"
 
 

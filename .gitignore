@@ -38,3 +38,6 @@ Thumbs.db
 .env.*
 !.env.example
 *.tar.zst
+
+# Intake deployment secrets
+deploy/intake.env

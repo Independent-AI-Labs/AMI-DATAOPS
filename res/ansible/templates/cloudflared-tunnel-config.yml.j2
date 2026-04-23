@@ -5,7 +5,7 @@
      ami_root          - absolute path to the AMI workspace root
 #}
 tunnel: {{ tunnel.tunnel_id }}
-credentials-file: {{ ami_root }}/{{ tunnel.credentials_file }}
+credentials-file: {{ tunnel.credentials_file if tunnel.credentials_file.startswith('/') else ami_root ~ '/' ~ tunnel.credentials_file }}
 {% if tunnel.metrics_port | default(None) %}
 metrics: localhost:{{ tunnel.metrics_port }}
 {% endif %}

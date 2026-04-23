@@ -14,12 +14,12 @@ from ami.dataops.report.defaults import (
 
 class TestDefaultPeer:
     def test_endpoint_is_public_reports(self) -> None:
-        assert DEFAULT_PEER_ENDPOINT.startswith("https://reports.independentailabs.com")
+        assert DEFAULT_PEER_ENDPOINT == "https://reports.ami-remote.work/"
 
     def test_build_default_peer_shape(self) -> None:
         peer = build_default_peer()
         assert peer.name == DEFAULT_PEER_NAME
-        assert str(peer.endpoint).rstrip("/").endswith("independentailabs.com")
+        assert str(peer.endpoint).rstrip("/").endswith("ami-remote.work")
         assert peer.shared_secret_env_var == "AMI_REPORT_SECRET_REPORTS"
 
 

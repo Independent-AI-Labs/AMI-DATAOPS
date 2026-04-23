@@ -1,0 +1,38 @@
+# Inventory vars for the `reports.ami-remote.work` intake VM.
+#
+# Passed to ansible via `-e @deploy/intake.vars.yml`. Two placeholders
+# must be filled after the one-time Cloudflare bootstrap run:
+#   - dataops_serve_tunnels[0].tunnel_id
+#   - dataops_serve_tunnels[0].credentials_file
+# Both come from the JSON that `ami-serve bootstrap-cloudflare` prints.
+#
+# Secrets (AMI_INTAKE_TOKENS__*, AMI_INTAKE_SECRETS__*) live in
+# `deploy/intake.env` (git-ignored, mode 0600). That file is pointed at
+# by dataops_intake_env_source below.
+---
+dataops_intake_config:
+  intake_port: 9180
+  intake_root: "{{ ansible_env.HOME }}/.local/share/ami-intake"
+  persist: true
+  max_file_mb: 1
+  max_bundle_mb: 500
+  max_files_per_bundle: 1000
+  global_concurrency: 16
+  allowed_senders:
+    - reports
+
+dataops_intake_env_source: "{{ playbook_dir | dirname | dirname }}/deploy/intake.env"
+
+dataops_serve_tunnels:
+  - name: intake-main
+    tunnel_id: cdd0de46-3325-4eab-a34f-dcf449dec602
+    credentials_file: "{{ ansible_env.HOME }}/.cloudflared/cdd0de46-3325-4eab-a34f-dcf449dec602.json"
+    metrics_port: 2000
+    replicas: 1
+
+dataops_serve_instances:
+  - name: intake-main
+    tunnel: intake-main
+    hostname: reports.ami-remote.work
+    upstream: "http://127.0.0.1:9180"
+    systemd_persist: true

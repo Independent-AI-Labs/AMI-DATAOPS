@@ -9,9 +9,9 @@ import httpx
 import pytest
 import respx
 
-from ami.dataops.report import cli
-from ami.dataops.report.cli import _common_source_root
+from ami.dataops.report import cli, pipeline
 from ami.dataops.report.manifest import verify_signature
+from ami.dataops.report.pipeline import _common_source_root
 from ami.dataops.report.scanner import CandidateFile
 
 SENDER = "alpha"
@@ -70,7 +70,8 @@ class TestPreviewCommand:
         assert rc == cli.EXIT_OK
         out = capsys.readouterr().out
         assert "app.log" in out
-        assert "trace.ndjson" in out
+        # Extension mismatches are dropped at scan time; preview omits them.
+        assert "trace.ndjson" not in out
 
 
 class TestSendDryRun:
@@ -157,15 +158,14 @@ class TestSendNonInteractive:
                 str(defaults_path),
             ]
         )
-        assert rc == cli.EXIT_AUTH_REJECTED
+        assert rc == pipeline.EXIT_AUTH_REJECTED
 
     def test_ci_without_defaults_errors(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         config_path = _write_config(tmp_path)
-        # Missing --defaults returns None from _ci_selection_and_peer, treated as cancel
         rc = cli.main(["send", "--config", str(config_path), "--ci"])
-        assert rc == cli.EXIT_OK
+        assert rc == cli.EXIT_INVALID_ARGS
         err = capsys.readouterr().err
         assert "--defaults" in err
 

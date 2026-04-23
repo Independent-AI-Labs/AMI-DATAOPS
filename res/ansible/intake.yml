@@ -18,9 +18,11 @@
   vars:
     project_root: "{{ playbook_dir | dirname | dirname }}"
     ami_root: "{{ project_root | dirname | dirname }}"
-    python_bin: "{{ ami_root }}/.boot-linux/bin/python"
+    python_bin: "{{ ami_root }}/.venv/bin/python"
     intake_config_dir: "{{ ansible_env.HOME }}/.config/ami-intake"
     intake_config_path: "{{ intake_config_dir }}/config.yml"
+    intake_env_file: "{{ intake_config_dir }}/env"
+    intake_env_source: "{{ dataops_intake_env_source | default('') }}"
     systemd_user_dir: "{{ ansible_env.HOME }}/.config/systemd/user"
     intake_config: "{{ dataops_intake_config | default({}) }}"
 
@@ -75,6 +77,14 @@
         src: ami-intake-config.yml.j2
         dest: "{{ intake_config_path }}"
         mode: "0600"
+
+    - name: Install intake env file from operator-supplied source
+      tags: [deploy]
+      ansible.builtin.copy:
+        src: "{{ intake_env_source }}"
+        dest: "{{ intake_env_file }}"
+        mode: "0600"
+      when: intake_env_source | length > 0
 
     - name: Install ami-intake systemd user unit
       tags: [deploy]
