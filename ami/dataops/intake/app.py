@@ -18,7 +18,9 @@ import hmac
 import json
 import os
 import tempfile
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -29,12 +31,26 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartParser
 
-from ami.dataops.intake import audit, quarantine, validation
+from ami.dataops.intake import access_log, audit, quarantine, validation
 from ami.dataops.intake.config import IntakeConfig
+from ami.dataops.intake.http_helpers import (
+    auth_reject as _auth_reject,
+)
+from ami.dataops.intake.http_helpers import (
+    client_ip as _client_ip,
+)
+from ami.dataops.intake.http_helpers import (
+    content_length as _content_length,
+)
+from ami.dataops.intake.http_helpers import (
+    record_pre_ctx_validation_reject as _record_validation_reject,
+)
+from ami.dataops.intake.http_helpers import (
+    reject as _reject,
+)
 from ami.dataops.intake.stream import CappedAsyncStream
 
 SUPPORTED_SCHEMA_VERSION = 1
-RECEIPT_STATUS_REJECT = "reject"
 BEARER_PREFIX = "Bearer "
 BEARER_PREFIX_LEN = len(BEARER_PREFIX)
 HEADER_SENDER_ID = "X-AMI-Sender-Id"
@@ -42,6 +58,7 @@ HEADER_BUNDLE_ID = "X-AMI-Bundle-Id"
 HEADER_SIGNATURE = "X-AMI-Signature"
 SIGNATURE_SCHEME_PREFIX = "sha256="
 HASH_CHUNK_BYTES = 65536
+MS_PER_SECOND = 1000
 
 
 class ManifestFileEntry(BaseModel):
@@ -75,7 +92,43 @@ class RequestContext(BaseModel):
 
 def create_app(config: IntakeConfig) -> FastAPI:
     """Build a FastAPI application bound to `config`."""
-    app = FastAPI(title="ami-intake", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        access_log.configure(config)
+        try:
+            yield
+        finally:
+            access_log.shutdown()
+
+    app = FastAPI(title="ami-intake", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _access_log_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        start = time.monotonic()
+        response = await call_next(request)
+        logger = access_log.get()
+        if logger is None or not logger.should_log(request.url.path):
+            return response
+        duration_ms = int((time.monotonic() - start) * MS_PER_SECOND)
+        state = request.state
+        entry = access_log.AccessLogEntry(
+            ts=access_log.now_rfc3339(),
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            remote_addr=_client_ip(request, config.trust_proxy_headers),
+            duration_ms=duration_ms,
+            sender_id=getattr(state, "sender_id", None),
+            bundle_id=getattr(state, "bundle_id", None),
+            reject_reason=getattr(state, "reject_reason", None),
+            bytes_in=_content_length(request),
+        )
+        logger.write(entry)
+        return response
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -93,28 +146,32 @@ def create_app(config: IntakeConfig) -> FastAPI:
 
 
 async def _handle_bundle(request: Request, config: IntakeConfig) -> Response:
-    sender_id = _require_header(request, HEADER_SENDER_ID)
-    bundle_id = _require_header(request, HEADER_BUNDLE_ID)
-    signature_header = _require_header(request, HEADER_SIGNATURE)
-    token = _require_bearer_token(request)
-    _authenticate_sender(config, sender_id, token)
+    sender_id = _require_header(config, request, HEADER_SENDER_ID, "unknown_sender")
+    request.state.sender_id = sender_id
+    bundle_id = _require_header(config, request, HEADER_BUNDLE_ID, "unknown_sender")
+    request.state.bundle_id = bundle_id
+    signature_header = _require_header(
+        config, request, HEADER_SIGNATURE, "bad_signature"
+    )
+    token = _require_bearer_token(config, request)
+    _authenticate_sender(config, request, sender_id, token)
     existing = quarantine.bundle_exists(config.intake_root, sender_id, bundle_id)
     if existing is not None:
         return _ok_idempotent(existing)
     capped = CappedAsyncStream(request.stream(), config.max_bundle_bytes)
-    manifest_bytes, bundle_path = await _parse_multipart(request, capped)
+    manifest_bytes, bundle_path = await _parse_multipart(config, request, capped)
     ctx = RequestContext(
         config=config,
         sender_id=sender_id,
         bundle_id=bundle_id,
-        remote_addr=_remote_addr(request),
+        remote_addr=_client_ip(request, config.trust_proxy_headers),
         manifest_bytes=manifest_bytes,
         bundle_path=bundle_path,
     )
     try:
-        _verify_signature(ctx, signature_header)
-        manifest = _parse_manifest(manifest_bytes)
-        _assert_headers_match(manifest, sender_id, bundle_id)
+        _verify_signature(ctx, request, signature_header)
+        manifest = _parse_manifest(ctx, manifest_bytes)
+        _assert_headers_match(ctx, request, manifest)
         receipt = _process_bundle(ctx, manifest)
     finally:
         if bundle_path.exists():
@@ -126,69 +183,82 @@ async def _handle_bundle(request: Request, config: IntakeConfig) -> Response:
     )
 
 
-def _require_header(request: Request, name: str) -> str:
+def _require_header(
+    config: IntakeConfig,
+    request: Request,
+    name: str,
+    reason_code: audit.AuditReasonCode,
+) -> str:
     value = request.headers.get(name)
     if not value:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(config, request, reason_code)
     return value
 
 
-def _require_bearer_token(request: Request) -> str:
+def _require_bearer_token(config: IntakeConfig, request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith(BEARER_PREFIX):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(config, request, "missing_bearer")
     return auth[BEARER_PREFIX_LEN:]
 
 
-def _authenticate_sender(config: IntakeConfig, sender_id: str, token: str) -> None:
+def _authenticate_sender(
+    config: IntakeConfig, request: Request, sender_id: str, token: str
+) -> None:
     if sender_id not in config.allowed_senders:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(config, request, "unknown_sender")
     expected = os.environ.get(f"AMI_INTAKE_TOKENS__{sender_id.upper()}")
     if not expected or not hmac.compare_digest(token, expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(config, request, "bad_bearer")
 
 
-def _verify_signature(ctx: RequestContext, signature_header: str) -> None:
+def _verify_signature(
+    ctx: RequestContext, request: Request, signature_header: str
+) -> None:
     if not signature_header.startswith(SIGNATURE_SCHEME_PREFIX):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(ctx.config, request, "bad_signature")
     provided_hex = signature_header[len(SIGNATURE_SCHEME_PREFIX) :]
     secret = os.environ.get(f"AMI_INTAKE_SECRETS__{ctx.sender_id.upper()}")
     if not secret:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(ctx.config, request, "bad_signature")
     expected = hmac.new(
         secret.encode("utf-8"), ctx.manifest_bytes, hashlib.sha256
     ).hexdigest()
     if not hmac.compare_digest(provided_hex, expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+        raise _auth_reject(ctx.config, request, "bad_signature")
 
 
-def _parse_manifest(manifest_bytes: bytes) -> ManifestModel:
+def _parse_manifest(ctx: RequestContext, manifest_bytes: bytes) -> ManifestModel:
     try:
         data = json.loads(manifest_bytes.decode("utf-8"))
         manifest = ManifestModel.model_validate(data)
     except (json.JSONDecodeError, ValidationError, UnicodeDecodeError) as exc:
-        raise _reject("path_unsafe", f"manifest parse: {exc}") from exc
+        raise _validation_reject(ctx, "path_unsafe", f"manifest parse: {exc}") from exc
     if manifest.schema_version != SUPPORTED_SCHEMA_VERSION:
-        raise _reject("schema_unsupported", f"version {manifest.schema_version}")
+        raise _validation_reject(
+            ctx, "schema_unsupported", f"version {manifest.schema_version}"
+        )
     return manifest
 
 
 def _assert_headers_match(
-    manifest: ManifestModel, sender_id: str, bundle_id: str
+    ctx: RequestContext, request: Request, manifest: ManifestModel
 ) -> None:
-    if manifest.sender_id != sender_id or manifest.bundle_id != bundle_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth")
+    if manifest.sender_id != ctx.sender_id or manifest.bundle_id != ctx.bundle_id:
+        raise _auth_reject(ctx.config, request, "header_manifest_mismatch")
 
 
 async def _parse_multipart(
-    request: Request, capped: CappedAsyncStream
+    config: IntakeConfig, request: Request, capped: CappedAsyncStream
 ) -> tuple[bytes, Path]:
     parser = MultiPartParser(request.headers, cast(AsyncGenerator[bytes, None], capped))
     form = await parser.parse()
     manifest_field = form.get("manifest")
     bundle_field = form.get("bundle")
     if manifest_field is None or bundle_field is None:
-        raise _reject("path_unsafe", "multipart missing manifest or bundle part")
+        reason = "multipart missing manifest or bundle part"
+        _record_validation_reject(config, request, "path_unsafe")
+        raise _reject("path_unsafe", reason)
     manifest_bytes = await _read_form_field_bytes(manifest_field)
     bundle_path = await _spool_form_field_to_disk(bundle_field)
     return manifest_bytes, bundle_path
@@ -229,8 +299,7 @@ def _process_bundle(
             ),
         )
     except validation.ValidationRejected as exc:
-        _audit_reject(ctx, exc)
-        raise _reject(exc.reason_code, exc.detail) from exc
+        raise _validation_reject(ctx, exc.reason_code, exc.detail) from exc
     if staging.exists():
         _cleanup_staging(staging)
     _audit_accept(ctx, receipt)
@@ -301,11 +370,12 @@ def _audit_accept(ctx: RequestContext, receipt: quarantine.ReceiptModel) -> None
             reject_reason=None,
             receipt_sha256=receipt_sha,
         ),
+        max_active_bytes=ctx.config.max_audit_bytes,
     )
     receipt.audit_log_offset = offset
 
 
-def _audit_reject(ctx: RequestContext, exc: validation.ValidationRejected) -> None:
+def _audit_validation(ctx: RequestContext, reason_code: audit.AuditReasonCode) -> None:
     receipt_sha = _receipt_sha(ctx.manifest_bytes, ctx.bundle_path)
     byte_count = ctx.bundle_path.stat().st_size if ctx.bundle_path.exists() else 0
     audit.append_audit_record(
@@ -317,10 +387,18 @@ def _audit_reject(ctx: RequestContext, exc: validation.ValidationRejected) -> No
             remote_addr=ctx.remote_addr,
             byte_count=byte_count,
             file_count=0,
-            reject_reason=exc.reason_code,
+            reject_reason=reason_code,
             receipt_sha256=receipt_sha,
         ),
+        max_active_bytes=ctx.config.max_audit_bytes,
     )
+
+
+def _validation_reject(
+    ctx: RequestContext, reason_code: audit.AuditReasonCode, detail: str
+) -> HTTPException:
+    _audit_validation(ctx, reason_code)
+    return _reject(reason_code, detail)
 
 
 def _receipt_sha(manifest_bytes: bytes, bundle_path: Path) -> str:
@@ -332,25 +410,6 @@ def _receipt_sha(manifest_bytes: bytes, bundle_path: Path) -> str:
             for chunk in iter(lambda: handle.read(HASH_CHUNK_BYTES), b""):
                 hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def _remote_addr(request: Request) -> str:
-    client = request.client
-    return client.host if client else "unknown"
-
-
-def _reject(reason_code: str, detail: str) -> HTTPException:
-    body = json.dumps(
-        {
-            "status": RECEIPT_STATUS_REJECT,
-            "reason_code": reason_code,
-            "detail": detail,
-        }
-    )
-    return HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=body,
-    )
 
 
 def _ok_idempotent(existing: Path) -> Response:

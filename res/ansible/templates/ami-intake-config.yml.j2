@@ -7,6 +7,14 @@ max_file_mb: {{ intake_config.max_file_mb | default(1) }}
 max_bundle_mb: {{ intake_config.max_bundle_mb | default(500) }}
 max_files_per_bundle: {{ intake_config.max_files_per_bundle | default(1000) }}
 global_concurrency: {{ intake_config.global_concurrency | default(4) }}
+max_audit_mb: {{ intake_config.max_audit_mb | default(64) }}
+max_access_mb: {{ intake_config.max_access_mb | default(128) }}
+access_log_backups: {{ intake_config.access_log_backups | default(5) }}
+trust_proxy_headers: {{ (intake_config.trust_proxy_headers | default(true)) | string | lower }}
+access_log_exclude_paths:
+{% for excluded in intake_config.access_log_exclude_paths | default(['/healthz', '/metrics']) %}
+  - {{ excluded }}
+{% endfor %}
 allowed_senders:
 {% for sender_name in intake_config.allowed_senders %}
   - {{ sender_name }}

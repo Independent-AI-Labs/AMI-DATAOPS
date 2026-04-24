@@ -258,3 +258,129 @@ class TestRejects:
             bundle_id="different-id",
         )
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+def _audit_records(intake_root: Path) -> list[dict]:
+    path = intake_root / "audit.log"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def _access_records(intake_root: Path) -> list[dict]:
+    path = intake_root / "access.log"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+class TestAuthRejectAudit:
+    """Every 401 path writes an auth_reject audit entry + an access-log line."""
+
+    def test_missing_bearer_audits(self, tmp_path: Path) -> None:
+        with TestClient(create_app(_make_config(tmp_path))) as client:
+            rc = client.post(
+                "/v1/bundles",
+                headers={
+                    "X-AMI-Sender-Id": SENDER,
+                    "X-AMI-Bundle-Id": BUNDLE_ID,
+                    "X-AMI-Signature": "sha256=" + "0" * 64,
+                },
+            )
+        assert rc.status_code == status.HTTP_401_UNAUTHORIZED
+        records = _audit_records(tmp_path)
+        assert len(records) == 1
+        assert records[0]["event"] == "auth_reject"
+        assert records[0]["reject_reason"] == "missing_bearer"
+        access = _access_records(tmp_path)
+        assert len(access) == 1
+        assert access[0]["status"] == status.HTTP_401_UNAUTHORIZED
+        assert access[0]["reject_reason"] == "missing_bearer"
+        assert access[0]["sender_id"] == SENDER
+
+    def test_unknown_sender_audits(self, tmp_path: Path) -> None:
+        cfg = IntakeConfig.model_validate(
+            {
+                "intake_port": 9180,
+                "intake_root": str(tmp_path),
+                "allowed_senders": ["someone-else"],
+            }
+        )
+        with TestClient(create_app(cfg)) as client:
+            files = {"a.log": b"x\n"}
+            manifest = _build_manifest(files)
+            rc = _post(client, manifest, _build_tarball(files), _sign(manifest))
+        assert rc.status_code == status.HTTP_401_UNAUTHORIZED
+        records = _audit_records(tmp_path)
+        assert any(r["reject_reason"] == "unknown_sender" for r in records)
+
+    def test_bad_bearer_audits(self, tmp_path: Path) -> None:
+        with TestClient(create_app(_make_config(tmp_path))) as client:
+            files = {"a.log": b"x\n"}
+            manifest = _build_manifest(files)
+            rc = client.post(
+                "/v1/bundles",
+                headers={
+                    "Authorization": "Bearer wrong",
+                    "X-AMI-Sender-Id": SENDER,
+                    "X-AMI-Bundle-Id": BUNDLE_ID,
+                    "X-AMI-Signature": _sign(manifest),
+                },
+                files={
+                    "manifest": ("m.json", manifest, "application/json"),
+                    "bundle": ("b.tar.gz", _build_tarball(files), "application/gzip"),
+                },
+            )
+        assert rc.status_code == status.HTTP_401_UNAUTHORIZED
+        records = _audit_records(tmp_path)
+        assert any(r["reject_reason"] == "bad_bearer" for r in records)
+
+    def test_bad_signature_audits(self, tmp_path: Path) -> None:
+        with TestClient(create_app(_make_config(tmp_path))) as client:
+            files = {"a.log": b"x\n"}
+            manifest = _build_manifest(files)
+            rc = _post(client, manifest, _build_tarball(files), "sha256=" + "0" * 64)
+        assert rc.status_code == status.HTTP_401_UNAUTHORIZED
+        records = _audit_records(tmp_path)
+        assert any(r["reject_reason"] == "bad_signature" for r in records)
+
+    def test_header_manifest_mismatch_audits(self, tmp_path: Path) -> None:
+        with TestClient(create_app(_make_config(tmp_path))) as client:
+            files = {"a.log": b"x\n"}
+            manifest = _build_manifest(files)
+            rc = _post(
+                client,
+                manifest,
+                _build_tarball(files),
+                _sign(manifest),
+                bundle_id="different-id",
+            )
+        assert rc.status_code == status.HTTP_401_UNAUTHORIZED
+        records = _audit_records(tmp_path)
+        # The first audit entry is bad_signature since signature is computed
+        # against the original bundle_id but the header claims a different one;
+        # the HMAC check fires first. That's fine — we still audit.
+        assert any(
+            r["reject_reason"] in {"bad_signature", "header_manifest_mismatch"}
+            for r in records
+        )
+
+
+class TestAccessLogExcludes:
+    def test_healthz_is_not_logged(self, tmp_path: Path) -> None:
+        with TestClient(create_app(_make_config(tmp_path))) as client:
+            client.get("/healthz")
+            client.get("/healthz")
+        assert _access_records(tmp_path) == []
+
+    def test_accept_writes_access_entry(self, tmp_path: Path) -> None:
+        with TestClient(create_app(_make_config(tmp_path))) as client:
+            files = {"a.log": b"x\n"}
+            manifest = _build_manifest(files)
+            rc = _post(client, manifest, _build_tarball(files), _sign(manifest))
+        assert rc.status_code == status.HTTP_202_ACCEPTED
+        access = _access_records(tmp_path)
+        assert len(access) == 1
+        assert access[0]["status"] == status.HTTP_202_ACCEPTED
+        assert access[0]["sender_id"] == SENDER
+        assert access[0]["reject_reason"] is None

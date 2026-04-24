@@ -23,6 +23,10 @@ from ami.dataops.intake.validation import (
 MIN_PORT = 1
 MAX_PORT = 65535
 DEFAULT_GLOBAL_CONCURRENCY = 4
+DEFAULT_MAX_AUDIT_MB = 64
+DEFAULT_MAX_ACCESS_MB = 128
+DEFAULT_ACCESS_LOG_BACKUPS = 5
+DEFAULT_EXCLUDE_PATHS: list[str] = ["/healthz", "/metrics"]
 BYTES_PER_MIB = 1024 * 1024
 
 
@@ -39,6 +43,13 @@ class IntakeConfig(BaseModel):
     max_files_per_bundle: int = Field(default=DEFAULT_MAX_FILES_PER_BUNDLE, gt=0)
     global_concurrency: int = Field(default=DEFAULT_GLOBAL_CONCURRENCY, gt=0)
     allowed_senders: list[str] = Field(default_factory=list)
+    max_audit_mb: int = Field(default=DEFAULT_MAX_AUDIT_MB, gt=0)
+    max_access_mb: int = Field(default=DEFAULT_MAX_ACCESS_MB, gt=0)
+    access_log_backups: int = Field(default=DEFAULT_ACCESS_LOG_BACKUPS, ge=0)
+    trust_proxy_headers: bool = True
+    access_log_exclude_paths: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_EXCLUDE_PATHS)
+    )
 
     @field_validator("intake_root")
     @classmethod
@@ -60,6 +71,14 @@ class IntakeConfig(BaseModel):
     @property
     def max_bundle_bytes(self) -> int:
         return self.max_bundle_mb * BYTES_PER_MIB
+
+    @property
+    def max_audit_bytes(self) -> int:
+        return self.max_audit_mb * BYTES_PER_MIB
+
+    @property
+    def max_access_bytes(self) -> int:
+        return self.max_access_mb * BYTES_PER_MIB
 
 
 def load_intake_config(path: Path) -> IntakeConfig:

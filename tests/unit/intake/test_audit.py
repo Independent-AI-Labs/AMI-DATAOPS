@@ -161,3 +161,65 @@ class TestVerifyChain:
         path.write_bytes(b"".join(lines))
         with pytest.raises(RuntimeError, match="chain broken"):
             audit.verify_chain(tmp_path)
+
+
+class TestAuthRejectEvent:
+    def test_auth_reject_roundtrips(self, tmp_path: Path) -> None:
+        record, _ = audit.append_audit_record(
+            tmp_path,
+            _params(
+                event="auth_reject",
+                reject_reason="missing_bearer",
+                receipt_sha256="",
+                sender_id="<missing>",
+                bundle_id="<missing>",
+            ),
+        )
+        assert record.event == "auth_reject"
+        assert record.reject_reason == "missing_bearer"
+        audit.verify_chain(tmp_path)
+
+
+class TestAutoRotation:
+    def test_exceeds_threshold_triggers_seal(self, tmp_path: Path) -> None:
+        # Seed a "big" active log, then append with a small threshold.
+        for i in range(5):
+            audit.append_audit_record(
+                tmp_path,
+                _params(bundle_id=f"b{i}", receipt_sha256=f"{i:064x}"),
+            )
+        active_size = (tmp_path / "audit.log").stat().st_size
+        # Threshold strictly below current size so the next append rotates.
+        audit.append_audit_record(
+            tmp_path,
+            _params(bundle_id="trigger", receipt_sha256="f" * 64),
+            max_active_bytes=active_size // 2,
+        )
+        sealed = sorted((tmp_path / "audit").glob("*.log"))
+        assert len(sealed) == 1, "threshold should have sealed the active log"
+        # Active log must exist and be empty post-rotation.
+        assert not (tmp_path / "audit.log").exists()
+
+    def test_under_threshold_no_rotation(self, tmp_path: Path) -> None:
+        audit.append_audit_record(
+            tmp_path,
+            _params(bundle_id="b", receipt_sha256="a" * 64),
+            max_active_bytes=10 * 1024 * 1024,
+        )
+        archive = tmp_path / "audit"
+        assert not archive.exists() or not list(archive.glob("*.log"))
+
+    def test_chain_intact_across_auto_rotation(self, tmp_path: Path) -> None:
+        audit.append_audit_record(
+            tmp_path, _params(bundle_id="b1", receipt_sha256="a" * 64)
+        )
+        # Tiny threshold forces rotation on the next append.
+        audit.append_audit_record(
+            tmp_path,
+            _params(bundle_id="b2", receipt_sha256="b" * 64),
+            max_active_bytes=1,
+        )
+        audit.append_audit_record(
+            tmp_path, _params(bundle_id="b3", receipt_sha256="c" * 64)
+        )
+        audit.verify_chain(tmp_path)

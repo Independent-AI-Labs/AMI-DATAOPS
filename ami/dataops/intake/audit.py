@@ -27,18 +27,37 @@ ACTIVE_LOG_MODE = 0o640
 SEALED_LOG_MODE = 0o440
 ARCHIVE_DIR_MODE = 0o750
 
+AuditEvent = Literal["accept", "reject", "auth_reject"]
+AuditReasonCode = Literal[
+    # Validation rejects (existing, emitted from the bundle pipeline).
+    "ext_not_allowed",
+    "path_unsafe",
+    "not_text",
+    "file_too_large",
+    "bundle_too_large",
+    "too_many_files",
+    "hash_mismatch",
+    "schema_unsupported",
+    # Auth rejects (new, emitted before the bundle is parsed).
+    "missing_bearer",
+    "unknown_sender",
+    "bad_bearer",
+    "bad_signature",
+    "header_manifest_mismatch",
+]
+
 
 class AuditRecord(BaseModel):
     """One receive-attempt record written to `audit.log`."""
 
     ts: str
-    event: Literal["accept", "reject"]
+    event: AuditEvent
     sender_id: str
     bundle_id: str
     remote_addr: str
     byte_count: int
     file_count: int
-    reject_reason: str | None
+    reject_reason: AuditReasonCode | None
     receipt_sha256: str
     prev_hash: str
 
@@ -55,13 +74,13 @@ class SealRecord(BaseModel):
 class AuditAppendParams(BaseModel):
     """Inputs to `append_audit_record`, grouped so the API stays argument-free."""
 
-    event: Literal["accept", "reject"]
+    event: AuditEvent
     sender_id: str
     bundle_id: str
     remote_addr: str
     byte_count: int
     file_count: int
-    reject_reason: str | None
+    reject_reason: AuditReasonCode | None
     receipt_sha256: str
 
 
@@ -131,12 +150,18 @@ def compute_expected_prev_hash(intake_root: Path) -> str:
 def append_audit_record(
     intake_root: Path,
     params: AuditAppendParams,
+    *,
+    max_active_bytes: int | None = None,
 ) -> tuple[AuditRecord, int]:
     """Append a new audit record and return (record, byte_offset).
 
     Serialises all appends through a process-wide lock so the prev_hash read
     and record write happen atomically. Fsyncs the file before returning so
     a power-loss after HTTP response still leaves the audit entry on disk.
+
+    If `max_active_bytes` is set and the post-append file size crosses it,
+    `rotate_audit` is invoked automatically — the chain stays intact because
+    the seal record is written under the same lock.
     """
     intake_root.mkdir(parents=True, exist_ok=True)
     active = intake_root / AUDIT_LOG_NAME
@@ -165,6 +190,9 @@ def append_audit_record(
             os.close(fd)
         if needs_chmod:
             active.chmod(ACTIVE_LOG_MODE)
+        post_size = active.stat().st_size
+    if max_active_bytes is not None and post_size >= max_active_bytes:
+        rotate_audit(intake_root)
     return record, offset
 
 
